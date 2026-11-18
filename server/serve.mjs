@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { handleContent, handlePoster, initContent } from './content.mjs';
+
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
 
@@ -909,6 +911,16 @@ const server = createServer((req, res) => {
     sendJson(res, 200, submissionStatus());
     return;
   }
+  if (url.pathname === '/api/content' && (req.method === 'GET' || req.method === 'HEAD')) {
+    void handleContent(req, res, sendJson).catch(() => {
+      if (!res.headersSent) sendJson(res, 502, { ok: false, error: 'CONTENT' });
+    });
+    return;
+  }
+  if (url.pathname.startsWith('/api/poster/') && (req.method === 'GET' || req.method === 'HEAD')) {
+    handlePoster(req, res, url);
+    return;
+  }
   if (url.pathname === '/api/gallery') {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405);
@@ -937,6 +949,7 @@ const server = createServer((req, res) => {
 });
 
 loadLedgerFile();
+initContent(dataDir);
 
 server.listen(port, host, () => {
   console.log(`Reckless site on http://${host}:${port}`);

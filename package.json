@@ -3,7 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
-  "scripts": { "start": "node server/serve.mjs" },
-  "dependencies": { "busboy": "^1.6.0" }
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/serve.mjs"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "sharp": "^0.34.5"
+  }
 }
