@@ -260,7 +260,46 @@ const BROWSER_HEADERS = {
   'Accept-Language': 'en-GB,en;q=0.9',
 };
 
+const SKIDDLE_KEY = (process.env.SKIDDLE_API_KEY || '').trim();
+let skiddleSeed = null;
+function seedFor(id) {
+  if (!skiddleSeed) {
+    try { skiddleSeed = JSON.parse(readFileSync(new URL('./skiddle-seed.json', import.meta.url), 'utf8')).events || {}; } catch { skiddleSeed = {}; }
+  }
+  return skiddleSeed[id] || null;
+}
+
+async function skiddleApiEvent(id) {
+  const data = await get(`https://www.skiddle.com/api/v1/events/${id}/?api_key=${encodeURIComponent(SKIDDLE_KEY)}`, { as: 'json' });
+  const d = data?.results;
+  if (!d || data.error) throw new Error(`Skiddle API ${data?.errormessage || 'no result'}`);
+  return {
+    name: d.eventname,
+    startDate: d.startdate || d.date,
+    endDate: d.enddate || null,
+    image: d.largeimageurl || d.imageurl || null,
+    location: { name: d.venue?.name || '', address: { addressLocality: d.venue?.town || 'Belfast' } },
+    performer: Array.isArray(d.artists) ? d.artists.map((a) => ({ name: a?.name })).filter((a) => a.name) : [],
+  };
+}
+
+// Skiddle event: official API when a key is set, else the public page's
+// JSON-LD, else the last-known copy (Skiddle's firewall challenges some
+// cloud IPs, including Render's).
 async function skiddleEvent(id) {
+  if (SKIDDLE_KEY) {
+    try { return await skiddleApiEvent(id); } catch (error) {
+      console.error('Skiddle API failed', id, error instanceof Error ? error.message : error);
+    }
+  }
+  try { return await skiddlePageEvent(id); } catch (error) {
+    const seeded = seedFor(id);
+    if (seeded) return { ...seeded, seeded: true };
+    throw error;
+  }
+}
+
+async function skiddlePageEvent(id) {
   const res = await fetch(`https://www.skiddle.com/e/${id}`, { headers: BROWSER_HEADERS, redirect: 'follow', signal: AbortSignal.timeout(20000) });
   const html = await res.text();
   if (!res.ok || !html.includes('ld+json')) {
@@ -312,6 +351,7 @@ async function loadEvents(previous) {
         ticketsUrl: `https://www.skiddle.com/e/${sid}`,
         image: null,
         poster: null,
+        dataSource: ld.seeded ? 'seed' : SKIDDLE_KEY && !ld['@type'] ? 'skiddle-api' : 'skiddle-page',
       };
       let poster = null;
       try { poster = await drivePosterFor(event, folders); } catch (error) {

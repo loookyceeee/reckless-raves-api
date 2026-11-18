@@ -1,0 +1,155 @@
+{
+ "note": "Last-known Skiddle listings (captured 2026-11-18). Used only when Skiddle cannot be reached from the server.",
+ "events": {
+  "42803971": {
+   "name": "Gearbox X Reckless Raves: THE TEMPLE 008",
+   "startDate": "2026-11-28T15:00:00+00:00",
+   "endDate": "2026-11-28T23:00:00+00:00",
+   "image": "https://d31fr2pwly4c4s.cloudfront.net/9/2/e/2351295_7ecfd22e_gearbox-x-reckless-raves-the-temple-008_400.jpg",
+   "location": {
+    "name": "THE TEMPLE",
+    "address": {
+     "@type": "PostalAddress",
+     "streetAddress": "8 Carlisle Circus",
+     "addressLocality": "Belfast",
+     "addressCountry": "GB",
+     "postalCode": "BT14 6AT"
+    },
+    "geo": {
+     "@type": "GeoCoordinates",
+     "latitude": "54.60722190",
+     "longitude": "-5.93651270"
+    }
+   },
+   "performer": [
+    {
+     "@type": "MusicGroup",
+     "name": "Fraw",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Fraw-123569477"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "exproz",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/exproz-123617742"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Detailed",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Detailed-123618890"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Azdat",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Azdat-123618981"
+    }
+   ]
+  },
+  "42853722": {
+   "name": "Reckless Raves: THE TEMPLE 009 [BOXING DAY SPECIAL]",
+   "startDate": "2026-12-26T15:00:00+00:00",
+   "endDate": "2026-12-26T23:00:00+00:00",
+   "image": "https://d31fr2pwly4c4s.cloudfront.net/7/b/b/2368473_300a2ced_reckless-raves-the-temple-009-boxing-day-special-_400.jpg",
+   "location": {
+    "name": "THE TEMPLE",
+    "address": {
+     "@type": "PostalAddress",
+     "streetAddress": "8 Carlisle Circus",
+     "addressLocality": "Belfast",
+     "addressCountry": "GB",
+     "postalCode": "BT14 6AT"
+    },
+    "geo": {
+     "@type": "GeoCoordinates",
+     "latitude": "54.60722190",
+     "longitude": "-5.93651270"
+    }
+   },
+   "performer": [
+    {
+     "@type": "MusicGroup",
+     "name": "Ethan Mitchell",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Ethan-Mitchell-123590175"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Toza",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Toza-123618907"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Voidrage",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Voidrage-123628615"
+    }
+   ]
+  },
+  "43169461": {
+   "name": "Reckless Raves x Gearbox: THE TEMPLE 008 [AFTERPARTY]",
+   "startDate": "2026-11-28T23:00:00+00:00",
+   "endDate": "2026-11-29T03:00:00+00:00",
+   "image": "https://d31fr2pwly4c4s.cloudfront.net/3/2/d/2469267_e2299592_reckless-raves-x-gearbox-the-temple-008-official-afterparty-_400.jpg",
+   "location": {
+    "name": "The Marcus Ward",
+    "address": {
+     "@type": "PostalAddress",
+     "streetAddress": "1 Bankmore Square",
+     "addressLocality": "Belfast",
+     "addressCountry": "GB",
+     "postalCode": "BT7 1DH"
+    },
+    "geo": {
+     "@type": "GeoCoordinates",
+     "latitude": "54.59223800",
+     "longitude": "-5.93079600"
+    }
+   },
+   "performer": [
+    {
+     "@type": "MusicGroup",
+     "name": "Fraw",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Fraw-123569477"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Azdat",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Azdat-123618981"
+    },
+    {
+     "@type": "MusicGroup",
+     "name": "Dejection",
+     "sameAs": [],
+     "url": "https://www.skiddle.com/artists/Dejection-123628616"
+    }
+   ]
+  },
+  "43187226": {
+   "name": "Reckless Raves: LOCATION X [NYE SPECIAL]",
+   "startDate": "2026-12-31T21:00:00+00:00",
+   "endDate": "2027-01-01T02:00:00+00:00",
+   "image": "https://d31fr2pwly4c4s.cloudfront.net/0/6/b/2471868_861e3c30_reckless-raves-location-x-nye-special-_400.jpg",
+   "location": {
+    "name": "LOCATION X",
+    "address": {
+     "@type": "PostalAddress",
+     "streetAddress": "149 Lisburn Rd, Belfast",
+     "addressLocality": "Belfast",
+     "addressCountry": "GB",
+     "postalCode": "BT9 7AJ"
+    },
+    "geo": {
+     "@type": "GeoCoordinates",
+     "latitude": "54.58335850",
+     "longitude": "-5.94526960"
+    }
+   }
+  }
+ }
+}
