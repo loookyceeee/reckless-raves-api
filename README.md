@@ -5,6 +5,10 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
 ## Public endpoints (CORS `*`, used by recklessraves.co.uk)
 
 - `GET /api/content` – records, events (Skiddle + Drive posters), shop.
+  Each event may carry `ticketStatus`: `"soldout"` (Skiddle single-event API
+  `ticketStatus === "0"` with `tickets: true`) or `"sellingfast"` (Skiddle search
+  API `hotSeller: true`). Omitted otherwise, for cancelled events, and whenever
+  the data came from the Skiddle page or seed fallback instead of the API.
 - `GET /api/poster/<file>[?w=360|540|720]` – posters; `w` serves a cached phone-size JPEG.
 - `GET /api/gallery` – albums with `coverUrl` (1200w), `coverThumb` (750w), `images[].url` (1600w), `thumb` (750w), `full` (1500w).
 - `GET /api/crew/config` – ladder, crews, wardrobe, digital rewards.

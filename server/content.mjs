@@ -329,7 +329,45 @@ async function skiddleApiEvent(id) {
     image: d.largeimageurl || d.imageurl || null,
     location: { name: d.venue?.name || '', address: { addressLocality: d.venue?.town || 'Belfast' } },
     performer: Array.isArray(d.artists) ? d.artists.map((a) => ({ name: a?.name })).filter((a) => a.name) : [],
+    // Raw Skiddle ticket fields, read by ticketStatusFor().
+    skiddleTicketStatus: d.ticketStatus == null ? null : String(d.ticketStatus),
+    skiddleTickets: d.tickets === true,
+    skiddleCancelled: String(d.cancelled) === '1',
   };
+}
+
+// Skiddle's search endpoint is the only place that carries `hotSeller`
+// (the single-event endpoint omits it). One paged search around Belfast,
+// mapped by event id. Failure just means no 'sellingfast' this refresh.
+async function skiddleHotSellers() {
+  const hot = new Map();
+  if (!SKIDDLE_KEY) return hot;
+  for (let offset = 0; offset < 500; offset += 100) {
+    let data;
+    try {
+      data = await get(`https://www.skiddle.com/api/v1/events/search/?api_key=${encodeURIComponent(SKIDDLE_KEY)}&latitude=54.597&longitude=-5.93&radius=60&limit=100&offset=${offset}&order=date`, { as: 'json' });
+    } catch (error) {
+      console.error('Skiddle search failed', String(error instanceof Error ? error.message : error).split(' ')[0]);
+      break;
+    }
+    const rows = Array.isArray(data?.results) ? data.results : [];
+    for (const r of rows) hot.set(String(r.id), r.hotSeller === true);
+    if (rows.length < 100) break;
+  }
+  return hot;
+}
+
+// ticketStatus comes only from Skiddle API fields; anything else = omitted.
+//  - 'soldout':     single-event API ticketStatus === "0" with tickets === true
+//                   (checked against Skiddle's own schema.org offers: every
+//                   "0" event with listed offers had all offers SoldOut).
+//  - 'sellingfast': search API hotSeller === true (Skiddle's own flag).
+// Neither field is in Skiddle's public API docs.
+export function ticketStatusFor(ld, hotSeller) {
+  if (!ld || ld.seeded || ld['@type'] || ld.skiddleCancelled) return undefined;
+  if (ld.skiddleTickets && ld.skiddleTicketStatus === '0') return 'soldout';
+  if (ld.skiddleTickets && hotSeller === true) return 'sellingfast';
+  return undefined;
 }
 
 // Skiddle event: official API when a key is set, else the public page's
@@ -381,6 +419,7 @@ async function loadEvents(previous) {
     console.error('Poster folder list failed', error instanceof Error ? error.message : error);
   }
   const prevById = new Map((previous || []).map((e) => [e.skiddleId, e]));
+  const hotSellers = await skiddleHotSellers();
   const now = Date.now();
   const out = [];
   for (const sid of ids) {
@@ -409,6 +448,8 @@ async function loadEvents(previous) {
         poster: null,
         dataSource: ld.seeded ? 'seed' : SKIDDLE_KEY && !ld['@type'] ? 'skiddle-api' : 'skiddle-page',
       };
+      const ticketStatus = ticketStatusFor(ld, hotSellers.get(sid));
+      if (ticketStatus) event.ticketStatus = ticketStatus;
       let poster = null;
       try { poster = await drivePosterFor(event, folders); } catch (error) {
         console.error('Drive poster failed', sid, error instanceof Error ? error.message : error);
