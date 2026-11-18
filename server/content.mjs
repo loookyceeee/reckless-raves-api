@@ -32,6 +32,10 @@ const OVERRIDES = {
   '42853722': { id: 'temple-009', title: 'THE TEMPLE 009', subtitle: 'BOXING DAY SPECIAL', venue: 'The Temple', lineup: ['Toza', 'Voidrage', 'Khayto', 'Umbra', 'Clrk', 'Ethan Mitchell', 'Headstorm'] },
 };
 
+// Words that mark a poster as belonging to one specific night within a shared
+// folder, e.g. "Gearbox.GrandTour.Afterparty(Flyer).jpg".
+const SPECIFIC_WORDS = ['AFTERPARTY', 'PREPARTY', 'AFTERS', 'DAYTWO', 'DAY2'];
+
 // Key dates that map to poster folder names.
 const DATE_ALIASES = {
   '12-31': ['NYE', 'NEW YEAR', 'NEW YEARS'],
@@ -181,10 +185,22 @@ async function drivePosterFor(event, folders) {
   for (const { f } of ranked) {
     let files = [];
     try { files = await listFolder(f.id); } catch { continue; }
+    const eventWords = ` ${norm(`${event.rawName} ${event.title} ${event.subtitle}`).replace(/ /g, '')} `;
     const candidates = files
-      .filter((x) => !x.folder && /\.(jpe?g|png|webp)$/i.test(x.name))
-      .filter((x) => /POSTER|ARTWORK/i.test(x.name) && !/STORY|COVER/i.test(x.name))
-      .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
+      .filter((x) => !x.folder && /\.(jpe?g|png|webp)$/i.test(x.name) && !/STORY|COVER/i.test(x.name))
+      .map((x) => {
+        const name = norm(x.name);
+        const specific = SPECIFIC_WORDS.filter((w) => name.replace(/ /g, '').includes(w));
+        // A file for a specific night (e.g. AFTERPARTY) never goes on another event.
+        if (specific.some((w) => !eventWords.includes(w))) return null;
+        let score = /POSTER|ARTWORK/.test(name) ? 1 : 0;
+        if (specific.length) score += 2; // the more specific match wins
+        if (score === 0) return null; // other files only qualify when they are night-specific
+        if (specific.length === 0 && !/POSTER|ARTWORK/.test(name)) return null;
+        return { ...x, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, 'en', { numeric: true }));
     for (const file of candidates) {
       try {
         const size = await probeDrive(file.id);
