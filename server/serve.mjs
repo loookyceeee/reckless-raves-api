@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, scrypt, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -994,6 +994,19 @@ async function handleAuthRequest(req, res) {
     sendJson(res, 400, { ok: false, error: 'EMAIL' });
     return;
   }
+  // Opt-in PIN: only accounts that have set one need it. Build 6 never sends `pin`.
+  const existing = existingAccount(email);
+  if (existing && hasPin(existing)) {
+    if (body.pin === undefined || body.pin === null || body.pin === '') {
+      sendJson(res, 426, { ok: false, error: 'UPDATE_APP', message: 'UPDATE THE APP TO SIGN IN' });
+      return;
+    }
+    const check = await checkPin(req, email, existing, body.pin);
+    if (!check.ok) {
+      sendJson(res, check.status, check.payload);
+      return;
+    }
+  }
   await refreshLedger();
   touchDay1(accountFor(email));
   saveAccounts();
@@ -1227,10 +1240,235 @@ async function handleAvatarBaseWrite(req, res, url) {
     sendAvatarJson(req, res, 400, { ok: false, error: 'AVATAR_BASE' });
     return;
   }
+  const existing = existingAccount(email);
+  if (existing && hasPin(existing)) {
+    if (body?.pin === undefined || body?.pin === null || body?.pin === '') {
+      sendAvatarJson(req, res, 401, { ok: false, error: 'PIN_REQUIRED', message: 'PIN REQUIRED' });
+      return;
+    }
+    const check = await checkPin(req, email, existing, body.pin);
+    if (!check.ok) {
+      sendAvatarJson(req, res, check.status, check.payload);
+      return;
+    }
+  }
   const account = accountFor(email);
   account.avatarBase = next;
   saveAccounts();
   sendAvatarJson(req, res, 200, { avatarBase: account.avatarBase });
+}
+
+/*
+ * Opt-in 4-digit account PIN. Stored on the account row as `pinHash`
+ * ("scrypt$<saltB64>$<hashB64>"); the PIN itself is never stored, logged or returned.
+ * Wrong tries are counted per email on the row (`pinFails`, `pinLockedUntil`):
+ * 5 wrong tries lock the email for 15 minutes, even for the right PIN.
+ * Wrong tries are also limited per IP (20 per 15 minutes).
+ */
+const pinPattern = /^\d{4}$/;
+const pinMaxFails = 5;
+const pinLockMs = 15 * 60 * 1000;
+const pinIpMax = 20;
+const pinIpWindowMs = 15 * 60 * 1000;
+const pinFailsByIp = new Map();
+
+function pinSetupLive() {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.PIN_SETUP_LIVE || '').trim().toLowerCase());
+}
+
+function hasPin(account) {
+  return Boolean(account && typeof account.pinHash === 'string' && account.pinHash.startsWith('scrypt$'));
+}
+
+function scryptAsync(pin, salt) {
+  return new Promise((resolve, reject) => {
+    scrypt(String(pin), salt, 32, { N: 16384, r: 8, p: 1 }, (error, key) => (error ? reject(error) : resolve(key)));
+  });
+}
+
+async function hashPin(pin) {
+  const salt = randomBytes(16);
+  const key = await scryptAsync(pin, salt);
+  return `scrypt$${salt.toString('base64')}$${key.toString('base64')}`;
+}
+
+async function pinMatches(account, pin) {
+  if (!hasPin(account) || typeof pin !== 'string' || !pinPattern.test(pin)) return false;
+  const [, saltB64, hashB64] = account.pinHash.split('$');
+  const want = Buffer.from(hashB64 || '', 'base64');
+  const got = await scryptAsync(pin, Buffer.from(saltB64 || '', 'base64'));
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+
+function pinLockLeftMs(account) {
+  const until = Number(account.pinLockedUntil) || 0;
+  return until > Date.now() ? until - Date.now() : 0;
+}
+
+function pinIpBlocked(ip) {
+  const now = Date.now();
+  const hits = (pinFailsByIp.get(ip) || []).filter((at) => now - at < pinIpWindowMs);
+  pinFailsByIp.set(ip, hits);
+  return hits.length >= pinIpMax;
+}
+
+const lockedPayload = (account) => ({
+  ok: false,
+  error: 'LOCKED',
+  message: 'LOCKED, TRY AGAIN IN 15 MINUTES',
+  retryAfterSeconds: Math.ceil(pinLockLeftMs(account) / 1000),
+});
+
+/** Checks a PIN for an account that has one, applying the per-email lockout and per-IP limit. */
+async function checkPin(req, email, account, pin) {
+  if (pinLockLeftMs(account)) return { ok: false, status: 429, payload: lockedPayload(account) };
+  const ip = clientIp(req);
+  if (pinIpBlocked(ip)) return { ok: false, status: 429, payload: { ok: false, error: 'LIMIT', message: 'TOO MANY TRIES, TRY AGAIN LATER' } };
+  if (await pinMatches(account, typeof pin === 'number' ? String(pin).padStart(4, '0') : pin)) {
+    if (account.pinFails || account.pinLockedUntil) {
+      delete account.pinFails;
+      delete account.pinLockedUntil;
+      saveAccounts();
+    }
+    return { ok: true };
+  }
+  pinFailsByIp.get(ip).push(Date.now());
+  // An expired lock starts a fresh count.
+  if (account.pinLockedUntil) {
+    delete account.pinLockedUntil;
+    account.pinFails = 0;
+  }
+  account.pinFails = (Number(account.pinFails) || 0) + 1;
+  if (account.pinFails >= pinMaxFails) {
+    account.pinLockedUntil = Date.now() + pinLockMs;
+    account.pinFails = 0;
+    saveAccounts();
+    console.log('PIN lockout (5 wrong tries)');
+    return { ok: false, status: 429, payload: lockedPayload(account) };
+  }
+  saveAccounts();
+  return { ok: false, status: 401, payload: { ok: false, error: 'WRONG_PIN', message: 'WRONG PIN', triesLeft: pinMaxFails - account.pinFails } };
+}
+
+function sendPinJson(req, res, status, payload) {
+  const body = JSON.stringify(payload);
+  const origin = String(req.headers.origin || '');
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    Vary: 'Origin',
+  };
+  if (siteOrigins.has(origin)) headers['Access-Control-Allow-Origin'] = origin;
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function handlePinOptions(req, res) {
+  const origin = String(req.headers.origin || '');
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
+  };
+  if (siteOrigins.has(origin)) headers['Access-Control-Allow-Origin'] = origin;
+  res.writeHead(204, headers);
+  res.end();
+}
+
+function handlePinStatus(req, res, url) {
+  const email = normalizeEmail(url.searchParams.get('email'));
+  if (!validEmail(email)) {
+    sendPinJson(req, res, 400, { ok: false, error: 'EMAIL' });
+    return;
+  }
+  if (rateLimited(`pin-status:ip:${clientIp(req)}`, 60)) {
+    sendPinJson(req, res, 429, { ok: false, error: 'RATE' });
+    return;
+  }
+  sendPinJson(req, res, 200, { ok: true, hasPin: hasPin(existingAccount(email)) });
+}
+
+/** POST /api/crew/pin?email= { pin } sets a first PIN; { currentPin, pin } changes it. */
+async function handlePinSet(req, res, url) {
+  const email = normalizeEmail(url.searchParams.get('email'));
+  if (!validEmail(email)) {
+    sendPinJson(req, res, 400, { ok: false, error: 'EMAIL' });
+    return;
+  }
+  // Dormant until PIN_SETUP_LIVE=1: only the admin key (X-Admin-Key) can set a PIN meanwhile.
+  if (!pinSetupLive() && !adminKeyOk(String(req.headers['x-admin-key'] || ''))) {
+    sendPinJson(req, res, 403, { ok: false, error: 'PIN_SETUP_NOT_LIVE', message: 'PIN SETUP IS NOT LIVE YET' });
+    return;
+  }
+  if (rateLimited(`pin-set:ip:${clientIp(req)}`) || rateLimited(`pin-set:email:${email}`)) {
+    sendPinJson(req, res, 429, { ok: false, error: 'RATE' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    sendPinJson(req, res, 400, { ok: false, error: 'PIN_FORMAT', message: 'PIN MUST BE 4 DIGITS' });
+    return;
+  }
+  const pin = typeof body?.pin === 'string' ? body.pin : '';
+  if (!pinPattern.test(pin)) {
+    sendPinJson(req, res, 400, { ok: false, error: 'PIN_FORMAT', message: 'PIN MUST BE 4 DIGITS' });
+    return;
+  }
+  const existing = existingAccount(email);
+  if (existing && hasPin(existing)) {
+    if (body.currentPin === undefined || body.currentPin === null || body.currentPin === '') {
+      sendPinJson(req, res, 409, { ok: false, error: 'PIN_SET', message: 'PIN ALREADY SET' });
+      return;
+    }
+    const check = await checkPin(req, email, existing, body.currentPin);
+    if (!check.ok) {
+      sendPinJson(req, res, check.status, check.payload);
+      return;
+    }
+    existing.pinHash = await hashPin(pin);
+    existing.pinSetAt = new Date().toISOString();
+    saveAccounts();
+    sendPinJson(req, res, 200, { ok: true, hasPin: true, changed: true });
+    return;
+  }
+  const account = accountFor(email);
+  account.pinHash = await hashPin(pin);
+  account.pinSetAt = new Date().toISOString();
+  delete account.pinFails;
+  delete account.pinLockedUntil;
+  saveAccounts();
+  sendPinJson(req, res, 200, { ok: true, hasPin: true, changed: false });
+}
+
+/** DELETE /api/crew/pin?email= with X-Admin-Key (OAUTH_ADMIN_KEY): clears the PIN and any lockout. */
+function handlePinReset(req, res, url) {
+  const given = String(req.headers['x-admin-key'] || url.searchParams.get('key') || '');
+  if (!adminKeyOk(given)) {
+    sendJson(res, 403, { ok: false, error: 'ADMIN' });
+    return;
+  }
+  const email = normalizeEmail(url.searchParams.get('email'));
+  if (!validEmail(email)) {
+    sendJson(res, 400, { ok: false, error: 'EMAIL' });
+    return;
+  }
+  const account = existingAccount(email);
+  const had = hasPin(account);
+  if (account) {
+    delete account.pinHash;
+    delete account.pinSetAt;
+    delete account.pinFails;
+    delete account.pinLockedUntil;
+    saveAccounts();
+  }
+  console.log(`PIN admin reset (${had ? 'cleared' : 'no PIN'})`);
+  sendJson(res, 200, { ok: true, hasPin: false, cleared: had });
 }
 
 /**
@@ -1353,6 +1591,19 @@ const server = createServer((req, res) => {
       return;
     }
     sendAvatarJson(req, res, 405, { ok: false, error: 'METHOD' }, { open: true });
+    return;
+  }
+  if (url.pathname === '/api/crew/pin-status') {
+    if (req.method === 'OPTIONS') return handlePinOptions(req, res);
+    if (req.method === 'GET') return handlePinStatus(req, res, url);
+    sendPinJson(req, res, 405, { ok: false, error: 'METHOD' });
+    return;
+  }
+  if (url.pathname === '/api/crew/pin') {
+    if (req.method === 'OPTIONS') return handlePinOptions(req, res);
+    if (req.method === 'POST') return void handlePinSet(req, res, url);
+    if (req.method === 'DELETE') return handlePinReset(req, res, url);
+    sendPinJson(req, res, 405, { ok: false, error: 'METHOD' });
     return;
   }
   if (url.pathname === '/api/crew' && req.method === 'GET') {
