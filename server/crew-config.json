@@ -1,36 +1,47 @@
 {
- "version": 1,
- "note": "Single source for the app, the game and the toolkit. Swap ranks/wardrobe levels here; the app keeps a bundled fallback.",
+ "version": 2,
+ "source": "reckless-crew-config/v1 updated 2026-11-18T15:30:00Z",
+ "note": "Generated from the loyalty config. Do not edit by hand: run server/scripts/sync-crew-config.mjs.",
  "crews": [
   {
    "id": "fresher",
+   "key": "FRESHER",
    "name": "FRESHER",
    "merchPercent": 0,
-   "ticketPercent": 0
+   "ticketPercent": 0,
+   "codePrefix": null
   },
   {
    "id": "casual",
+   "key": "CASUAL_RAVER",
    "name": "CASUAL RAVER",
    "merchPercent": 5,
-   "ticketPercent": 5
+   "ticketPercent": 5,
+   "codePrefix": "CAS5"
   },
   {
    "id": "regular",
+   "key": "RECKLESS_REGULAR",
    "name": "RECKLESS REGULAR",
    "merchPercent": 10,
-   "ticketPercent": 10
+   "ticketPercent": 10,
+   "codePrefix": "REG10"
   },
   {
    "id": "family",
+   "key": "RECKLESS_FAMILY",
    "name": "RECKLESS FAMILY",
    "merchPercent": 15,
-   "ticketPercent": 15
+   "ticketPercent": 15,
+   "codePrefix": "FAM15"
   },
   {
    "id": "reckless-crew",
+   "key": "RECKLESS_CREW",
    "name": "RECKLESS CREW",
    "merchPercent": 20,
-   "ticketPercent": 20
+   "ticketPercent": 20,
+   "codePrefix": "RC20"
   }
  ],
  "ranks": [
@@ -42,7 +53,7 @@
   },
   {
    "level": 2,
-   "xp": 200,
+   "xp": 250,
    "crew": 0,
    "step": "II"
   },
@@ -60,67 +71,67 @@
   },
   {
    "level": 5,
-   "xp": 1800,
+   "xp": 1250,
    "crew": 1,
    "step": "II"
   },
   {
    "level": 6,
-   "xp": 2800,
+   "xp": 1500,
    "crew": 1,
    "step": "III"
   },
   {
    "level": 7,
-   "xp": 4500,
+   "xp": 2000,
    "crew": 2,
    "step": "I"
   },
   {
    "level": 8,
-   "xp": 6500,
+   "xp": 2250,
    "crew": 2,
    "step": "II"
   },
   {
    "level": 9,
-   "xp": 9000,
+   "xp": 2500,
    "crew": 2,
    "step": "III"
   },
   {
    "level": 10,
-   "xp": 13000,
+   "xp": 3000,
    "crew": 3,
    "step": "I"
   },
   {
    "level": 11,
-   "xp": 18000,
+   "xp": 3500,
    "crew": 3,
    "step": "II"
   },
   {
    "level": 12,
-   "xp": 24000,
+   "xp": 4000,
    "crew": 3,
    "step": "III"
   },
   {
    "level": 13,
-   "xp": 32000,
+   "xp": 5000,
    "crew": 4,
    "step": "I"
   },
   {
    "level": 14,
-   "xp": 42000,
+   "xp": 6000,
    "crew": 4,
    "step": "II"
   },
   {
    "level": 15,
-   "xp": 55000,
+   "xp": 7500,
    "crew": 4,
    "step": "III"
   }
@@ -130,13 +141,19 @@
    "id": "skate-tee",
    "name": "SKATE TEE",
    "slot": "top",
-   "level": 2
+   "level": 1
+  },
+  {
+   "id": "barrel-jeans",
+   "name": "BARREL JEANS",
+   "slot": "legs",
+   "level": 1
   },
   {
    "id": "rckls-tee",
    "name": "RCKLS TEE",
    "slot": "top",
-   "level": 3
+   "level": 2
   },
   {
    "id": "see-me-shorts",
@@ -148,30 +165,30 @@
    "id": "deject-sleeve",
    "name": "DEJECT SLEEVE",
    "slot": "top",
-   "level": 4
-  },
-  {
-   "id": "barrel-jeans",
-   "name": "BARREL JEANS",
-   "slot": "legs",
-   "level": 5
+   "level": 3
   },
   {
    "id": "moltin-tee",
    "name": "MOLTIN TEE",
    "slot": "top",
-   "level": 5
-  },
-  {
-   "id": "stripped-tee",
-   "name": "STRIPPED TEE",
-   "slot": "top",
-   "level": 6
+   "level": 4
   },
   {
    "id": "seasoned-pants",
    "name": "SEASONED PANTS",
    "slot": "legs",
+   "level": 4
+  },
+  {
+   "id": "stripped-tee",
+   "name": "STRIPPED TEE",
+   "slot": "top",
+   "level": 5
+  },
+  {
+   "id": "isometric-tee",
+   "name": "ISOMETRIC TEE",
+   "slot": "top",
    "level": 6
   },
   {
@@ -181,22 +198,16 @@
    "level": 7
   },
   {
-   "id": "isometric-tee",
-   "name": "ISOMETRIC TEE",
-   "slot": "top",
-   "level": 8
-  },
-  {
    "id": "artillery",
    "name": "ARTILLERY CARGOS",
    "slot": "legs",
-   "level": 8
+   "level": 7
   },
   {
    "id": "ultra-tee",
    "name": "ULTRA TEE",
    "slot": "top",
-   "level": 9
+   "level": 8
   },
   {
    "id": "stan-bottoms",
@@ -214,7 +225,7 @@
    "id": "pinner-tee",
    "name": "PINNER TEE",
    "slot": "top",
-   "level": 11
+   "level": 10
   },
   {
    "id": "rawdawg-shorts",
@@ -226,7 +237,7 @@
    "id": "distress-shirt",
    "name": "DISTRESS SHIRT",
    "slot": "top",
-   "level": 12
+   "level": 11
   },
   {
    "id": "manager-shorts",
@@ -265,6 +276,11 @@
    "level": 15
   }
  ],
+ "starterFit": {
+  "top": "skate-tee",
+  "outer": null,
+  "legs": "barrel-jeans"
+ },
  "rewards": [
   {
    "id": "badge",
@@ -290,5 +306,27 @@
   "name": "DAY 1 CREW",
   "from": "2026-11-23T00:00:00Z",
   "to": "2026-11-30T00:00:00Z"
+ },
+ "issuedColumns": [
+  "issued_at",
+  "email",
+  "from_crew",
+  "to_crew",
+  "skipped_crews",
+  "code",
+  "percent",
+  "trigger_event_id",
+  "xp_total_at_issue",
+  "status",
+  "emailed_at",
+  "redeemed_at",
+  "redeemed_order_id",
+  "channel",
+  "notes"
+ ],
+ "launch": {
+  "xp_start_instant_utc": "2026-11-23T00:00:00Z",
+  "timezone": "Europe/London",
+  "everyone_starts_at": 0
  }
 }

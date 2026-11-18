@@ -16,6 +16,7 @@ try {
 }
 for (const account of Object.values(accounts)) {
   account.fit = { top: null, outer: null, legs: null };
+  delete account.fitSet;
   delete account.lastLevelSeen;
   delete account.lastCrewSeen;
   account.xp = 0;

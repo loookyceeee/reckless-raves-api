@@ -1,6 +1,7 @@
 // Crew loyalty server logic for /api/crew: ladder + wardrobe from crew-config.json
 // (one swappable table shared by the app, game and toolkit), owned pieces,
 // per-fan discount codes, server-driven crew-up / level-up popups and badges.
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,11 +70,14 @@ export function setOwnedSheet(map) {
 }
 function readOwnedFiles() {
   let map = {};
-  const file = path.join(dataDir, 'crew-owned.json');
-  try {
-    if (existsSync(file)) map = { ...map, ...JSON.parse(readFileSync(file, 'utf8')) };
-  } catch {
-    console.error('crew-owned.json unreadable');
+  // Fallback files, shaped { "fan@email.com": ["SKATE TEE", "barrel-jeans", ...] } (names or ids).
+  const files = [path.join(dataDir, 'owned.json'), path.join(dataDir, 'crew-owned.json'), '/home/box/shared/reckless-crew/owned.json'];
+  for (const file of files) {
+    try {
+      if (existsSync(file)) map = { ...map, ...JSON.parse(readFileSync(file, 'utf8')) };
+    } catch {
+      console.error('owned file unreadable', path.basename(file));
+    }
   }
   try {
     if ((process.env.CREW_OWNED || '').trim()) map = { ...map, ...JSON.parse(process.env.CREW_OWNED) };
@@ -88,8 +92,17 @@ function readOwnedFiles() {
 }
 export function ownedFor(email) {
   if (Date.now() - ownedCache.at > 60 * 1000) ownedCache = { at: Date.now(), map: readOwnedFiles() };
-  const ids = new Set(config.wardrobe.map((piece) => piece.id));
-  return (ownedCache.map[email] || []).filter((id) => ids.has(id));
+  const byKey = new Map();
+  for (const piece of config.wardrobe) {
+    byKey.set(piece.id, piece.id);
+    byKey.set(piece.name.trim().toUpperCase(), piece.id);
+  }
+  const out = new Set();
+  for (const value of ownedCache.map[email] || []) {
+    const id = byKey.get(value) || byKey.get(String(value).trim().toUpperCase());
+    if (id) out.add(id);
+  }
+  return [...out];
 }
 
 /** Keeps only real pieces in their own slot that the level (or ownership) has unlocked. */
@@ -120,42 +133,97 @@ function codeTable() {
   return table;
 }
 
+const emailHash = (email) => createHash('sha256').update(email).digest('hex');
+
+/** Every code this email has ever been issued, oldest first (survives refunds and deletion, by hash). */
+function issuedTo(email) {
+  const hash = emailHash(email);
+  return Object.entries(issued)
+    .filter(([, value]) => value.hash === hash)
+    .map(([code, value]) => ({ code, ...value }))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+
+/* Issued-tab log for the XP Sheet. Rows queue on disk while Google is down. */
+const queuePath = () => path.join(dataDir, 'issued-queue.json');
+let sheetWriter = null;
+export function setIssuedWriter(fn) {
+  sheetWriter = fn;
+}
+function readQueue() {
+  try {
+    return JSON.parse(readFileSync(queuePath(), 'utf8')) || [];
+  } catch {
+    return [];
+  }
+}
+function queueRow(row) {
+  const queue = readQueue();
+  queue.push(row);
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(queuePath(), JSON.stringify(queue));
+  void flushIssued();
+}
+let flushing = false;
+export async function flushIssued() {
+  if (!sheetWriter || flushing) return;
+  const queue = readQueue();
+  if (!queue.length) return;
+  flushing = true;
+  try {
+    await sheetWriter(queue);
+    const rest = readQueue().slice(queue.length);
+    writeFileSync(queuePath(), JSON.stringify(rest));
+    console.log(`Issued tab: wrote ${queue.length} row(s)`);
+  } catch (error) {
+    console.error('Issued tab write queued', error instanceof Error ? error.message : error);
+  } finally {
+    flushing = false;
+  }
+}
+export function issuedQueueLength() {
+  return readQueue().length;
+}
+
 /**
- * Code table: { "<crewId>": { "codes": ["CREW-CAS5-7KQ2", ...], "shared": false } }.
- * Each email gets its own single-use code from the pool (recorded in
- * crew-codes-issued.json, never handed out twice). Empty pool = "coming soon".
+ * Crew-up codes. Pool table: { "<crewId>": { "codes": ["CREW-CAS5-7KQ2XM", ...] } }.
+ * One single-use code per fan per crew. A fan who skips crews gets ONE code for the
+ * highest crew reached (the skipped crews are logged). A crew already issued to this
+ * email is never issued again, even after a refund drops them back and they re-cross.
+ * Empty pool = "coming soon"; the code is issued on a later read once the pool is loaded.
  */
-function codesFor(email, level, account) {
-  const table = codeTable();
-  account.codes = account.codes && typeof account.codes === 'object' ? account.codes : {};
-  let changed = false;
-  const out = [];
-  config.crews.forEach((crew, index) => {
-    if (!crew.merchPercent || level < crewEntryLevel(index)) return;
-    let code = account.codes[crew.id] || null;
-    if (!code) {
-      const tier = table[crew.id];
-      const pool = Array.isArray(tier?.codes) ? tier.codes.map((value) => String(value).trim()).filter(Boolean) : [];
-      if (pool.length && tier.shared) code = pool[0];
-      else {
-        const free = pool.find((value) => !issued[value]);
-        if (free) {
-          code = free;
-          issued[free] = { email, crew: crew.id, at: new Date().toISOString() };
-          saveIssued();
-        }
-      }
-      if (code) {
-        account.codes[crew.id] = code;
-        changed = true;
-      }
+function codesFor(email, xp, level, account) {
+  const crewIndex = standing(xp).crew;
+  const mine = issuedTo(email);
+  const highestIssued = mine.reduce((max, item) => Math.max(max, config.crews.findIndex((crew) => crew.id === item.crew)), 0);
+  let fresh = null;
+  const target = config.crews[crewIndex];
+  if (target && target.merchPercent > 0 && crewIndex > highestIssued && !mine.some((item) => item.crew === target.id)) {
+    const pool = (codeTable()[target.id]?.codes || []).map((value) => String(value).trim()).filter(Boolean);
+    const free = pool.find((value) => !issued[value]);
+    if (free) {
+      const from = config.crews[Math.max(highestIssued, account.lastCrewSeen ?? 0)]?.key || 'FRESHER';
+      const skipped = config.crews.slice(Math.max(highestIssued, account.lastCrewSeen ?? 0) + 1, crewIndex).map((crew) => crew.key);
+      const at = new Date().toISOString();
+      issued[free] = { hash: emailHash(email), email, crew: target.id, at };
+      saveIssued();
+      fresh = free;
+      queueRow([at, email, from, target.key, skipped.join(','), free, String(target.merchPercent), `app:crew:${emailHash(email).slice(0, 12)}:${target.key}`, String(xp), 'issued', '', '', '', 'app', '']);
     }
-    out.push({ crew: crew.id, name: crew.name, percent: crew.merchPercent, level: crewEntryLevel(index), code, status: code ? 'ready' : 'soon' });
+  }
+  const list = issuedTo(email).map((item) => {
+    const crew = config.crews.find((entry) => entry.id === item.crew);
+    return { crew: item.crew, name: crew?.name, percent: crew?.merchPercent ?? 0, code: item.code, status: 'ready', issuedAt: item.at };
   });
-  return { codes: out, changed };
+  const pending =
+    target && target.merchPercent > 0 && crewIndex > highestIssued && !fresh && !list.some((item) => item.crew === target.id)
+      ? { crew: target.id, name: target.name, percent: target.merchPercent, code: null, status: 'soon' }
+      : null;
+  return { codes: pending ? [...list, pending] : list, changed: Boolean(fresh), fresh };
 }
 
 export function forgetCodes(email) {
+  // Keep the hash so the same email can never be issued that crew's code twice.
   let changed = false;
   for (const value of Object.values(issued)) {
     if (value.email === email) {
@@ -189,6 +257,10 @@ export function touchDay1(account) {
 export function crewState(email, xp, account) {
   const { level, crew } = standing(xp);
   const owned = ownedFor(email);
+  if (!account.fitSet) {
+    account.fit = { ...(config.starterFit || {}) };
+    account.fitSet = true;
+  }
   account.fit = validFit(account.fit, xp, owned);
   let changed = touchDay1(account);
   if (typeof account.lastLevelSeen !== 'number') {
@@ -197,7 +269,7 @@ export function crewState(email, xp, account) {
     account.lastCrewSeen = 0;
     changed = true;
   }
-  const { codes, changed: codesChanged } = codesFor(email, level, account);
+  const { codes, changed: codesChanged } = codesFor(email, xp, level, account);
   const unlocked = (from, to) => config.wardrobe.filter((piece) => piece.level > from && piece.level <= to).map((piece) => piece.id);
   const levelUp =
     level > account.lastLevelSeen
@@ -215,7 +287,7 @@ export function crewState(email, xp, account) {
           to: crew,
           name: config.crews[crew]?.name,
           percent: config.crews[crew]?.merchPercent ?? 0,
-          code: codes.find((item) => item.crew === config.crews[crew]?.id) || null,
+          code: codes.find((item) => item.crew === config.crews[crew]?.id) || codes[codes.length - 1] || null,
         }
       : null;
   const badges = config.rewards.filter((reward) => reward.level <= level).map((reward) => reward.id);

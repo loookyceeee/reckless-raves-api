@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, crewConfig, crewState, forgetCodes, initCrew, ownedFor, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
+import { acknowledge, crewConfig, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -108,6 +108,7 @@ async function driveHealthy(force = false) {
   try {
     await accessToken();
     driveCheck = { at: Date.now(), ok: true };
+    void flushIssued();
   } catch (error) {
     cachedToken = null;
     driveCheck = { at: Date.now(), ok: false };
@@ -614,6 +615,7 @@ async function refreshLedger() {
       ledgerStatus.sheetReadAt = new Date().toISOString();
       ledgerStatus.sheetError = null;
       void refreshOwnedSheet(token);
+      void flushIssued();
       const emails = {};
       for (const [email, xp] of map) emails[email] = xp;
       mkdirSync(path.dirname(ledgerPath), { recursive: true });
@@ -633,10 +635,10 @@ async function refreshLedger() {
   return ledgerRefresh;
 }
 
-/** Optional "Owned" tab on the XP Sheet: A = email, B = comma-separated wardrobe ids. */
+/** "Owned" tab on the XP Sheet: email | item_name (exact wardrobe name) | order_id | purchased_at. */
 async function refreshOwnedSheet(token) {
   try {
-    const range = encodeURIComponent('Owned!A2:B');
+    const range = encodeURIComponent('Owned!A2:D');
     const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${xpSheetId}/values/${range}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -645,12 +647,28 @@ async function refreshOwnedSheet(token) {
     const map = {};
     for (const row of payload.values || []) {
       const key = normalizeEmail(row[0]);
-      if (key.includes('@')) map[key] = String(row[1] || '').split(/[,\s]+/).filter(Boolean);
+      const name = String(row[1] || '').trim();
+      if (key.includes('@') && name) (map[key] ||= []).push(name);
     }
     setOwnedSheet(map);
   } catch {
     // tab is optional
   }
+}
+
+/** Appends crew-up code rows to the "Issued" tab (columns in crew-config issuedColumns). */
+async function appendIssuedRows(rows) {
+  const token = await accessToken();
+  const range = encodeURIComponent('Issued!A1');
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${xpSheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: rows }),
+    },
+  );
+  if (!response.ok) throw new Error(`Issued append ${response.status}`);
 }
 
 function ledgerHealth() {
@@ -668,6 +686,7 @@ function ledgerHealth() {
     sheetError: ledgerStatus.sheetError,
     fileUpdatedAt: fileUpdated,
     rows: ledgerMap.size,
+    issuedQueued: issuedQueueLength(),
     stale: !newest || Date.now() - Date.parse(newest) > 24 * 60 * 60 * 1000,
   };
 }
@@ -983,7 +1002,9 @@ function launchReset() {
   writeFileSync(ledgerPath, JSON.stringify({ source: 'reset', updated: new Date().toISOString(), rows: 0, emails: {} }));
   for (const account of Object.values(accounts)) {
     account.fit = emptyFit();
-    delete account.lastLevelSeen;
+    delete account.fitSet;
+    delete account.fitSet;
+  delete account.lastLevelSeen;
     delete account.lastCrewSeen;
     account.xp = 0;
   }
@@ -1140,6 +1161,7 @@ launchReset();
 loadLedgerFile();
 initContent(dataDir);
 initCrew(dataDir);
+if (xpSheetId) setIssuedWriter(appendIssuedRows);
 if (!process.env.AUTH_SECRET) console.error('AUTH_SECRET is not set: sessions use the development secret');
 
 server.listen(port, host, () => {
