@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, codePoolStatus, crewConfig, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
+import { acknowledge, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -91,10 +91,131 @@ function extensionOf(filename, mime) {
   return '';
 }
 
+const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'];
+const oauthTokenPath = () => path.join(dataDir, 'google-oauth.json');
+let storedOauth;
+function storedRefreshToken() {
+  if (storedOauth === undefined) {
+    try {
+      storedOauth = JSON.parse(readFileSync(oauthTokenPath(), 'utf8'));
+    } catch {
+      storedOauth = null;
+    }
+  }
+  return storedOauth?.refresh_token || '';
+}
+function oauthRedirectUri(req) {
+  const fixed = (process.env.OAUTH_REDIRECT_URI || '').trim();
+  if (fixed) return fixed;
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0];
+  return `${proto}://${host}/oauth/google/callback`;
+}
+const oauthStates = new Map();
+function adminKeyOk(given) {
+  const want = (process.env.OAUTH_ADMIN_KEY || '').trim();
+  if (want.length < 24 || typeof given !== 'string') return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(want);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function sendPage(res, status, title, body) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+  res.end(
+    `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head><body style="margin:0;background:#000;color:#fff;font-family:sans-serif;text-align:center;padding:48px 20px"><h1 style="font-size:22px">${title}</h1><p>${body}</p></body></html>`,
+  );
+}
+
+/** GET /oauth/google/start?key=<OAUTH_ADMIN_KEY> → Google consent (offline, prompt=consent). */
+function handleOauthStart(req, res, url) {
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+  if (!adminKeyOk(url.searchParams.get('key'))) {
+    sendPage(res, 403, 'Not allowed', 'This link needs the admin key.');
+    return;
+  }
+  if (!clientId) {
+    sendPage(res, 500, 'Not configured', 'GOOGLE_CLIENT_ID is not set on the server.');
+    return;
+  }
+  const state = randomBytes(24).toString('hex');
+  const now = Date.now();
+  for (const [key, at] of oauthStates) if (now - at > 10 * 60 * 1000) oauthStates.delete(key);
+  oauthStates.set(state, now);
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: oauthRedirectUri(req),
+    response_type: 'code',
+    scope: GOOGLE_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'true',
+    state,
+  });
+  res.writeHead(302, { Location: `https://accounts.google.com/o/oauth2/v2/auth?${params}`, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+  res.end();
+}
+
+/** GET /oauth/google/callback → exchange the code, store the refresh token in /data (never logged). */
+async function handleOauthCallback(req, res, url) {
+  const state = url.searchParams.get('state') || '';
+  const started = oauthStates.get(state);
+  oauthStates.delete(state);
+  if (!started || Date.now() - started > 10 * 60 * 1000) {
+    sendPage(res, 400, 'Link expired', 'Start again from the admin link.');
+    return;
+  }
+  if (url.searchParams.get('error')) {
+    sendPage(res, 400, 'Google did not connect', 'Consent was cancelled or refused. Start again from the admin link.');
+    return;
+  }
+  const code = url.searchParams.get('code') || '';
+  try {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: (process.env.GOOGLE_CLIENT_ID || '').trim(),
+        client_secret: (process.env.GOOGLE_CLIENT_SECRET || '').trim(),
+        redirect_uri: oauthRedirectUri(req),
+        grant_type: 'authorization_code',
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.refresh_token) {
+      console.error('Google OAuth exchange failed', response.status, payload.error || 'no refresh token');
+      sendPage(res, 502, 'Google did not connect', 'No refresh token came back. Start again from the admin link.');
+      return;
+    }
+    const granted = String(payload.scope || '').split(' ').filter(Boolean);
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(oauthTokenPath(), JSON.stringify({ refresh_token: payload.refresh_token, scope: granted, saved_at: new Date().toISOString() }), { mode: 0o600 });
+    storedOauth = undefined;
+    cachedToken = null;
+    driveCheck = { at: 0, ok: false };
+    const ok = await driveHealthy(true);
+    void refreshLedger();
+    const missing = GOOGLE_SCOPES.filter((scope) => !granted.includes(scope));
+    console.log(`Google OAuth connected (scopes: ${granted.length}, missing: ${missing.length})`);
+    sendPage(
+      res,
+      200,
+      ok ? 'Google connected' : 'Saved, but the test failed',
+      missing.length
+        ? `Missing permission: ${missing.join(', ')}. Start again and tick every box.`
+        : 'Drive and Sheets are connected. You can close this page.',
+    );
+  } catch (error) {
+    console.error('Google OAuth exchange error', error instanceof Error ? error.message : 'unknown');
+    sendPage(res, 502, 'Google did not connect', 'Try again in a minute.');
+  }
+}
+
 function oauthConfig() {
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
-  const refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
+  // A token saved by the /oauth/google flow (in /data) overrides the env var.
+  const refreshToken = storedRefreshToken() || (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
   if (!clientId || !clientSecret || !refreshToken || !folderId) return null;
   return { clientId, clientSecret, refreshToken };
 }
@@ -615,6 +736,7 @@ async function refreshLedger() {
       ledgerStatus.sheetReadAt = new Date().toISOString();
       ledgerStatus.sheetError = null;
       void refreshOwnedSheet(token);
+      void refreshLoadedSheet(token);
       void flushIssued();
       const emails = {};
       for (const [email, xp] of map) emails[email] = xp;
@@ -653,6 +775,21 @@ async function refreshOwnedSheet(token) {
     setOwnedSheet(map);
   } catch {
     // tab is optional
+  }
+}
+
+/** "Loaded" tab on the XP Sheet: column A = a code that exists in Squarespace (row 1 is a header). */
+async function refreshLoadedSheet(token) {
+  try {
+    const range = encodeURIComponent('Loaded!A2:A');
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${xpSheetId}/values/${range}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    setLoadedSheet((payload.values || []).map((row) => row[0]));
+  } catch {
+    // tab is optional; CREW_CODES_LOADED env still applies
   }
 }
 
@@ -1105,6 +1242,14 @@ const server = createServer((req, res) => {
     void submissionStatus().then((status) => sendJson(res, 200, status));
     return;
   }
+  if (url.pathname === '/oauth/google/start' && req.method === 'GET') {
+    handleOauthStart(req, res, url);
+    return;
+  }
+  if (url.pathname === '/oauth/google/callback' && req.method === 'GET') {
+    void handleOauthCallback(req, res, url);
+    return;
+  }
   if ((url.pathname === '/spin-rules' || url.pathname === '/spin-rules/') && (req.method === 'GET' || req.method === 'HEAD')) {
     const body = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'pages', 'spin-rules.html'));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*' });
@@ -1162,6 +1307,8 @@ launchReset();
 loadLedgerFile();
 initContent(dataDir);
 initCrew(dataDir);
+fillPending();
+setInterval(() => fillPending(), 5 * 60 * 1000).unref?.();
 if (xpSheetId) setIssuedWriter(appendIssuedRows);
 if (!process.env.AUTH_SECRET) console.error('AUTH_SECRET is not set: sessions use the development secret');
 

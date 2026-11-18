@@ -152,9 +152,9 @@ export function codePoolStatus() {
   const pools = {};
   for (const [crewId, pool] of Object.entries(table)) {
     const codes = pool?.codes || [];
-    pools[crewId] = { total: codes.length, free: codes.filter((code) => !used.has(code)).length };
+    pools[crewId] = { total: codes.length, free: codes.filter((code) => !used.has(code)).length, loadedFree: freeLoaded(crewId).length };
   }
-  return { live: codesLive(), pools };
+  return { live: codesLive(), loadedListed: loadedCodes().size, queuedFans: pendingCount(), pools };
 }
 
 export const codesLive = () => /^(1|true|yes|on)$/i.test((process.env.CREW_CODES_LIVE || '').trim());
@@ -218,50 +218,136 @@ export function issuedQueueLength() {
  * email is never issued again, even after a refund drops them back and they re-cross.
  * Empty pool = "coming soon"; the code is issued on a later read once the pool is loaded.
  */
+/* Loaded list: codes the loyalty teammate has confirmed exist in Squarespace.
+ * Sources (union): XP Sheet tab "Loaded" column A (one code per row, header in row 1),
+ * and env CREW_CODES_LOADED (comma-separated). A code is only ever issued if it is listed. */
+let loadedSheet = new Set();
+export function setLoadedSheet(codes) {
+  loadedSheet = new Set((codes || []).map((code) => String(code).trim().toLowerCase()).filter(Boolean));
+  fillPending();
+}
+function loadedCodes() {
+  const out = new Set(loadedSheet);
+  for (const code of (process.env.CREW_CODES_LOADED || '').split(/[\s,]+/)) {
+    const clean = code.trim().toLowerCase();
+    if (clean) out.add(clean);
+  }
+  return out;
+}
+function freeLoaded(crewId) {
+  const loaded = loadedCodes();
+  return (codeTable()[crewId]?.codes || [])
+    .map((value) => String(value).trim())
+    .filter((value) => value && !issued[value] && loaded.has(value.toLowerCase()));
+}
+
+/* Fans who reached a crew while its loaded pool was empty. { email: { crew, from, skipped, xp, at } } */
+const pendingPath = () => path.join(dataDir, 'crew-codes-pending.json');
+function readPending() {
+  try {
+    return JSON.parse(readFileSync(pendingPath(), 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+function writePending(pending) {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(pendingPath(), JSON.stringify(pending));
+}
+export function pendingCount() {
+  return Object.keys(readPending()).length;
+}
+
+function issueCode(email, target, xp, from, skipped, code) {
+  const at = new Date().toISOString();
+  issued[code] = { hash: emailHash(email), email, crew: target.id, at };
+  saveIssued();
+  const row = {
+    issued_at: at,
+    email,
+    from_crew: from,
+    to_crew: target.key,
+    skipped_crews: skipped.join(','),
+    code,
+    percent: String(target.merchPercent),
+    trigger_event_id: `app:crew:${emailHash(email).slice(0, 12)}:${target.key}`,
+    xp_total_at_issue: String(xp),
+    status: 'issued',
+    channel: 'app',
+  };
+  const columns = config.issuedColumns || Object.keys(row);
+  queueRow(columns.map((column) => row[column] ?? ''));
+}
+
+function crewIndexOf(id) {
+  return config.crews.findIndex((crew) => crew.id === id);
+}
+
+/** Fill queued fans from newly loaded codes (called when the Loaded list changes and on reads). */
+export function fillPending() {
+  if (!config) return 0;
+  const pending = readPending();
+  let filled = 0;
+  for (const [email, wait] of Object.entries(pending)) {
+    const target = config.crews[crewIndexOf(wait.crew)];
+    const mine = issuedTo(email);
+    if (!target || mine.some((item) => crewIndexOf(item.crew) >= crewIndexOf(wait.crew))) {
+      delete pending[email];
+      continue;
+    }
+    const code = freeLoaded(target.id)[0];
+    if (!code) continue;
+    issueCode(email, target, wait.xp, wait.from, wait.skipped || [], code);
+    delete pending[email];
+    filled += 1;
+  }
+  writePending(pending);
+  if (filled) console.log(`Crew codes: filled ${filled} queued fan(s)`);
+  return filled;
+}
+
+/**
+ * Crew-up codes. One single-use code per fan for the highest crew reached (skipped crews are
+ * logged); a crew already issued to this email is never issued again (refunds included).
+ * Only codes on the Loaded list are handed out. If that crew has no free loaded code, the fan
+ * is queued and filled as soon as codes are loaded. Codes are shown only when CREW_CODES_LIVE=1.
+ */
 function codesFor(email, xp, level, account) {
   const crewIndex = standing(xp).crew;
   const mine = issuedTo(email);
-  const highestIssued = mine.reduce((max, item) => Math.max(max, config.crews.findIndex((crew) => crew.id === item.crew)), 0);
+  const highestIssued = mine.reduce((max, item) => Math.max(max, crewIndexOf(item.crew)), 0);
   let fresh = null;
+  let waiting = false;
   const target = config.crews[crewIndex];
   if (target && target.merchPercent > 0 && crewIndex > highestIssued && !mine.some((item) => item.crew === target.id)) {
-    // Codes stay "coming soon" until CREW_CODES_LIVE=1 (set once they exist in Squarespace).
-    const pool = codesLive() ? (codeTable()[target.id]?.codes || []).map((value) => String(value).trim()).filter(Boolean) : [];
-    const free = pool.find((value) => !issued[value]);
-    if (free) {
-      const from = config.crews[Math.max(highestIssued, account.lastCrewSeen ?? 0)]?.key || 'FRESHER';
-      const skipped = config.crews.slice(Math.max(highestIssued, account.lastCrewSeen ?? 0) + 1, crewIndex).map((crew) => crew.key);
-      const at = new Date().toISOString();
-      issued[free] = { hash: emailHash(email), email, crew: target.id, at };
-      saveIssued();
-      fresh = free;
-      const row = {
-        issued_at: at,
-        email,
-        from_crew: from,
-        to_crew: target.key,
-        skipped_crews: skipped.join(','),
-        code: free,
-        percent: String(target.merchPercent),
-        trigger_event_id: `app:crew:${emailHash(email).slice(0, 12)}:${target.key}`,
-        xp_total_at_issue: String(xp),
-        status: 'issued',
-        channel: 'app',
-      };
-      const columns = config.issuedColumns || Object.keys(row);
-      queueRow(columns.map((column) => row[column] ?? ''));
+    const base = Math.max(highestIssued, account.lastCrewSeen ?? 0);
+    const from = config.crews[base]?.key || 'FRESHER';
+    const skipped = config.crews.slice(base + 1, crewIndex).map((crew) => crew.key);
+    const pending = readPending();
+    const code = freeLoaded(target.id)[0];
+    if (code) {
+      issueCode(email, target, xp, pending[email]?.from || from, skipped, code);
+      fresh = code;
+      if (pending[email]) {
+        delete pending[email];
+        writePending(pending);
+      }
+    } else {
+      waiting = true;
+      if (pending[email]?.crew !== target.id) {
+        // Highest crew only: a later, higher crew replaces the queued one.
+        pending[email] = { crew: target.id, from: pending[email]?.from || from, skipped, xp, at: new Date().toISOString() };
+        writePending(pending);
+      }
     }
   }
+  const live = codesLive();
   const list = issuedTo(email).map((item) => {
     const crew = config.crews.find((entry) => entry.id === item.crew);
-    const live = codesLive();
     return { crew: item.crew, name: crew?.name, percent: crew?.merchPercent ?? 0, code: live ? item.code : null, status: live ? 'ready' : 'soon', issuedAt: item.at };
   });
-  const pending =
-    target && target.merchPercent > 0 && crewIndex > highestIssued && !fresh && !list.some((item) => item.crew === target.id)
-      ? { crew: target.id, name: target.name, percent: target.merchPercent, code: null, status: 'soon' }
-      : null;
-  return { codes: pending ? [...list, pending] : list, changed: Boolean(fresh), fresh };
+  const pendingItem = waiting ? { crew: target.id, name: target.name, percent: target.merchPercent, code: null, status: 'soon' } : null;
+  return { codes: pendingItem ? [...list, pendingItem] : list, changed: Boolean(fresh), fresh };
 }
 
 export function forgetCodes(email) {
@@ -274,6 +360,11 @@ export function forgetCodes(email) {
     }
   }
   if (changed) saveIssued();
+  const pending = readPending();
+  if (pending[email]) {
+    delete pending[email];
+    writePending(pending);
+  }
 }
 
 function inDay1(now = Date.now()) {
