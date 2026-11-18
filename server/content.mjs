@@ -159,14 +159,18 @@ async function probeDrive(fileId) {
   let { width, height } = meta;
   if (meta.orientation && meta.orientation >= 5) [width, height] = [height, width];
   probes[fileId] = { width, height };
-  await renderPoster(`drive-${fileId}`, buf, 'cover');
+  // Exact 3:4 fills the frame; other portrait ratios are shown whole on black.
+  const ratio = width / height;
+  await renderPoster(`drive-${fileId}`, buf, ratio >= 0.74 && ratio <= 0.76 ? 'cover' : 'contain');
   return probes[fileId];
 }
 
 function isPosterSize({ width, height }) {
   if (!width || !height || height <= width) return false;
   const ratio = width / height;
-  return ratio >= 0.72 && ratio <= 0.78 && width >= 900;
+  // Portrait poster sizes: 3:4 (0.75) and Instagram 4:5 (0.8) and close variants.
+  // STORY (9:16 = 0.56) and COVER (16:9) never pass.
+  return ratio >= 0.7 && ratio <= 0.86 && width >= 900;
 }
 
 async function drivePosterFor(event, folders) {
