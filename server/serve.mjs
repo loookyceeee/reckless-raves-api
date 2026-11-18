@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, avatarBaseOf, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
+import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -898,10 +898,12 @@ function cleanFit(fit) {
 
 function accountFor(email) {
   const key = normalizeEmail(email);
-  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit(), avatarBase: 'male' };
+  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit() };
   accounts[key].fit = cleanFit(accounts[key].fit);
   accounts[key].xp = Math.max(0, Math.floor(Number(accounts[key].xp) || 0));
-  accounts[key].avatarBase = avatarBaseOf(accounts[key]);
+  const stored = validAvatarBase(accounts[key].avatarBase);
+  if (stored) accounts[key].avatarBase = stored;
+  else if (Object.prototype.hasOwnProperty.call(accounts[key], 'avatarBase')) delete accounts[key].avatarBase;
   return accounts[key];
 }
 
@@ -1136,6 +1138,7 @@ async function handleCrewWrite(req, res) {
       return;
     }
     account.avatarBase = next;
+    account.avatarBaseSet = true;
   }
   acknowledge(account, xp, body.ack);
   saveAccounts();
@@ -1215,7 +1218,7 @@ function handleAvatarBaseRead(req, res, url) {
     return;
   }
   const account = existingAccount(email);
-  sendAvatarJson(req, res, 200, { avatarBase: account ? avatarBaseOf(account) : 'male' }, { open: true });
+  sendAvatarJson(req, res, 200, { avatarBase: explicitAvatarBase(account) }, { open: true });
 }
 
 async function handleAvatarBaseWrite(req, res, url) {
@@ -1254,6 +1257,7 @@ async function handleAvatarBaseWrite(req, res, url) {
   }
   const account = accountFor(email);
   account.avatarBase = next;
+  account.avatarBaseSet = true;
   saveAccounts();
   sendAvatarJson(req, res, 200, { avatarBase: account.avatarBase });
 }

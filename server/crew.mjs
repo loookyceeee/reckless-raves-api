@@ -398,9 +398,28 @@ export function validAvatarBase(value) {
   return AVATAR_BASES.has(next) ? next : null;
 }
 
-/** Stored per email; missing or invalid values read as the default, 'male'. */
+/** Stored per email; missing or invalid values read as the default, 'male'. Used by GET /api/crew. */
 export function avatarBaseOf(account) {
   return validAvatarBase(account?.avatarBase) || 'male';
+}
+
+/** Valid stored value, or null if missing/invalid. Does not default to male. */
+export function storedAvatarBase(account) {
+  return validAvatarBase(account?.avatarBase);
+}
+
+/**
+ * Explicit pick only, for GET /api/crew/avatar-base.
+ * A value is explicit if it was set via PUT (avatarBaseSet) or is 'female'
+ * (female was never written as a creation default). Existing 'male' rows
+ * without avatarBaseSet cannot be distinguished from the default written on
+ * account creation, so they read as null.
+ */
+export function explicitAvatarBase(account) {
+  const value = storedAvatarBase(account);
+  if (!value) return null;
+  if (account?.avatarBaseSet === true || value === 'female') return value;
+  return null;
 }
 
 /**
