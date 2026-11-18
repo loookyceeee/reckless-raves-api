@@ -39,6 +39,38 @@ export function initCrew(dir) {
   } catch {
     issued = {};
   }
+  importCodesFromEnv();
+}
+
+/** One-way import: CREW_CODES env (JSON pool) is merged into DATA_DIR/crew-codes.json; codes are never dropped. */
+function importCodesFromEnv() {
+  const raw = (process.env.CREW_CODES || '').trim();
+  if (!raw) return;
+  let incoming;
+  try {
+    incoming = JSON.parse(raw);
+  } catch {
+    console.error('CREW_CODES env is not valid JSON');
+    return;
+  }
+  const file = path.join(dataDir, 'crew-codes.json');
+  let current = {};
+  try {
+    if (existsSync(file)) current = JSON.parse(readFileSync(file, 'utf8')) || {};
+  } catch {
+    current = {};
+  }
+  let added = 0;
+  for (const [crewId, pool] of Object.entries(incoming)) {
+    const have = current[crewId]?.codes || [];
+    const seen = new Set(have);
+    const extra = (pool?.codes || []).filter((code) => typeof code === 'string' && !seen.has(code));
+    added += extra.length;
+    current[crewId] = { ...(current[crewId] || {}), ...pool, codes: [...have, ...extra] };
+  }
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(file, JSON.stringify(current));
+  console.log(`Crew code pool: imported ${added} new code(s) into crew-codes.json`);
 }
 
 function saveIssued() {
@@ -68,25 +100,11 @@ export function setOwnedSheet(map) {
   ownedSheet = map || {};
   ownedCache.at = 0;
 }
+/** Owned pieces come only from the XP Sheet "Owned" tab (email | item_name | order_id | purchased_at). */
 function readOwnedFiles() {
-  let map = {};
-  // Fallback files, shaped { "fan@email.com": ["SKATE TEE", "barrel-jeans", ...] } (names or ids).
-  const files = [path.join(dataDir, 'owned.json'), path.join(dataDir, 'crew-owned.json'), '/home/box/shared/reckless-crew/owned.json'];
-  for (const file of files) {
-    try {
-      if (existsSync(file)) map = { ...map, ...JSON.parse(readFileSync(file, 'utf8')) };
-    } catch {
-      console.error('owned file unreadable', path.basename(file));
-    }
-  }
-  try {
-    if ((process.env.CREW_OWNED || '').trim()) map = { ...map, ...JSON.parse(process.env.CREW_OWNED) };
-  } catch {
-    console.error('CREW_OWNED env is not valid JSON');
-  }
   const out = {};
-  for (const [email, ids] of Object.entries({ ...map, ...ownedSheet })) {
-    if (Array.isArray(ids)) out[String(email).trim().toLowerCase()] = ids.filter((id) => typeof id === 'string');
+  for (const [email, names] of Object.entries(ownedSheet)) {
+    if (Array.isArray(names)) out[String(email).trim().toLowerCase()] = names.filter((name) => typeof name === 'string');
   }
   return out;
 }
@@ -125,13 +143,21 @@ function codeTable() {
   } catch (error) {
     console.error('crew-codes.json unreadable', error instanceof Error ? error.message : error);
   }
-  try {
-    if ((process.env.CREW_CODES || '').trim()) table = { ...table, ...JSON.parse(process.env.CREW_CODES) };
-  } catch {
-    console.error('CREW_CODES env is not valid JSON');
-  }
   return table;
 }
+
+export function codePoolStatus() {
+  const table = codeTable();
+  const used = new Set(Object.keys(issued));
+  const pools = {};
+  for (const [crewId, pool] of Object.entries(table)) {
+    const codes = pool?.codes || [];
+    pools[crewId] = { total: codes.length, free: codes.filter((code) => !used.has(code)).length };
+  }
+  return { live: codesLive(), pools };
+}
+
+export const codesLive = () => /^(1|true|yes|on)$/i.test((process.env.CREW_CODES_LIVE || '').trim());
 
 const emailHash = (email) => createHash('sha256').update(email).digest('hex');
 
@@ -199,7 +225,8 @@ function codesFor(email, xp, level, account) {
   let fresh = null;
   const target = config.crews[crewIndex];
   if (target && target.merchPercent > 0 && crewIndex > highestIssued && !mine.some((item) => item.crew === target.id)) {
-    const pool = (codeTable()[target.id]?.codes || []).map((value) => String(value).trim()).filter(Boolean);
+    // Codes stay "coming soon" until CREW_CODES_LIVE=1 (set once they exist in Squarespace).
+    const pool = codesLive() ? (codeTable()[target.id]?.codes || []).map((value) => String(value).trim()).filter(Boolean) : [];
     const free = pool.find((value) => !issued[value]);
     if (free) {
       const from = config.crews[Math.max(highestIssued, account.lastCrewSeen ?? 0)]?.key || 'FRESHER';
@@ -208,12 +235,27 @@ function codesFor(email, xp, level, account) {
       issued[free] = { hash: emailHash(email), email, crew: target.id, at };
       saveIssued();
       fresh = free;
-      queueRow([at, email, from, target.key, skipped.join(','), free, String(target.merchPercent), `app:crew:${emailHash(email).slice(0, 12)}:${target.key}`, String(xp), 'issued', '', '', '', 'app', '']);
+      const row = {
+        issued_at: at,
+        email,
+        from_crew: from,
+        to_crew: target.key,
+        skipped_crews: skipped.join(','),
+        code: free,
+        percent: String(target.merchPercent),
+        trigger_event_id: `app:crew:${emailHash(email).slice(0, 12)}:${target.key}`,
+        xp_total_at_issue: String(xp),
+        status: 'issued',
+        channel: 'app',
+      };
+      const columns = config.issuedColumns || Object.keys(row);
+      queueRow(columns.map((column) => row[column] ?? ''));
     }
   }
   const list = issuedTo(email).map((item) => {
     const crew = config.crews.find((entry) => entry.id === item.crew);
-    return { crew: item.crew, name: crew?.name, percent: crew?.merchPercent ?? 0, code: item.code, status: 'ready', issuedAt: item.at };
+    const live = codesLive();
+    return { crew: item.crew, name: crew?.name, percent: crew?.merchPercent ?? 0, code: live ? item.code : null, status: live ? 'ready' : 'soon', issuedAt: item.at };
   });
   const pending =
     target && target.merchPercent > 0 && crewIndex > highestIssued && !fresh && !list.some((item) => item.crew === target.id)

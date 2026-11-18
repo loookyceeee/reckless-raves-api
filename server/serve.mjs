@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, crewConfig, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
+import { acknowledge, codePoolStatus, crewConfig, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -687,6 +687,7 @@ function ledgerHealth() {
     fileUpdatedAt: fileUpdated,
     rows: ledgerMap.size,
     issuedQueued: issuedQueueLength(),
+    crewCodes: codePoolStatus(),
     stale: !newest || Date.now() - Date.parse(newest) > 24 * 60 * 60 * 1000,
   };
 }
