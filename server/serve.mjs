@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
+import { acknowledge, crewConfig, crewState, forgetCodes, initCrew, ownedFor, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -65,7 +66,7 @@ function sendJson(res, status, payload) {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.end(body);
@@ -98,15 +99,36 @@ function oauthConfig() {
   return { clientId, clientSecret, refreshToken };
 }
 
-function submissionStatus() {
-  const oauth = Boolean(oauthConfig());
+let driveCheck = { at: 0, ok: false };
+
+/** Real check: can we mint a Google access token right now? Cached for 5 minutes. */
+async function driveHealthy(force = false) {
+  if (!oauthConfig()) return false;
+  if (!force && driveCheck.at && Date.now() - driveCheck.at < 5 * 60 * 1000) return driveCheck.ok;
+  try {
+    await accessToken();
+    driveCheck = { at: Date.now(), ok: true };
+  } catch (error) {
+    cachedToken = null;
+    driveCheck = { at: Date.now(), ok: false };
+    console.error('Drive health', error instanceof Error ? error.message : error);
+  }
+  return driveCheck.ok;
+}
+
+async function submissionStatus() {
+  const configured = Boolean(oauthConfig());
+  const drive = configured ? await driveHealthy() : false;
+  if (drive && ledgerStatus.sheet !== 'ok' && Date.now() - (ledgerStatus.triedAt || 0) > 5 * 60 * 1000) {
+    ledgerStatus.triedAt = Date.now();
+    await refreshLedger().catch(() => {});
+  }
   return {
     ok: true,
-    drive: oauth,
-    mode: oauth ? 'oauth' : 'pending',
-    oauth,
-    folderId,
-    folderUrl,
+    drive,
+    xpLedger: ledgerHealth(),
+    mode: drive ? 'oauth' : configured ? 'token' : 'pending',
+    checkedAt: driveCheck.at ? new Date(driveCheck.at).toISOString() : null,
   };
 }
 
@@ -187,11 +209,14 @@ async function loadGallery() {
           if (!photos.length) return null;
           const cover = await chooseCover(photos);
           const sized = (url) => `${url}?format=1600w`;
+          // url / coverUrl stay full size for the website; the app uses the lighter thumb fields.
           return {
             id: slug,
             title,
+            count: photos.length,
             coverUrl: `${cover}?format=1200w`,
-            images: photos.map((url) => ({ id: url.split('/').pop(), url: sized(url) })),
+            coverThumb: `${cover}?format=750w`,
+            images: photos.map((url) => ({ id: url.split('/').pop(), url: sized(url), thumb: `${url}?format=750w`, full: `${url}?format=1500w` })),
           };
         } catch (error) {
           console.error('Gallery album failed', slug, error instanceof Error ? error.message : error);
@@ -302,9 +327,9 @@ function validEmail(value) {
 }
 
 async function handleSubmit(req, res) {
-  if (!oauthConfig()) {
+  if (!(await driveHealthy())) {
     req.resume();
-    sendJson(res, 503, { ok: false, error: 'PENDING', drive: false, folderId });
+    sendJson(res, 503, { ok: false, error: 'PENDING', drive: false });
     return;
   }
   const declared = Number(req.headers['content-length'] || 0);
@@ -378,7 +403,8 @@ async function handleSubmit(req, res) {
     });
   } catch (error) {
     console.error('Drive upload failed', error instanceof Error ? error.message : error);
-    sendJson(res, 502, { ok: false, error: 'UPLOAD' });
+    const healthy = await driveHealthy(true);
+    sendJson(res, healthy ? 502 : 503, { ok: false, error: healthy ? 'UPLOAD' : 'PENDING' });
   }
 }
 
@@ -525,8 +551,9 @@ function saveAccounts() {
   writeFileSync(accountsPath, JSON.stringify(accounts));
 }
 
+const ledgerStatus = { sheet: 'off', sheetReadAt: null, sheetError: null };
+
 function rememberLedger(map) {
-  if (!map.size) return;
   ledgerMap = map;
   ledgerAt = Date.now();
 }
@@ -534,7 +561,7 @@ function rememberLedger(map) {
 function loadLedgerFile() {
   try {
     const stamp = statSync(ledgerPath).mtimeMs;
-    if (stamp === ledgerFileMtime && ledgerMap.size) return ledgerMap;
+    if (stamp === ledgerFileMtime) return ledgerMap;
     const raw = JSON.parse(readFileSync(ledgerPath, 'utf8'));
     const rows = raw && typeof raw.emails === 'object' ? raw.emails : {};
     const map = new Map();
@@ -545,7 +572,7 @@ function loadLedgerFile() {
       map.set(key, xp);
     }
     ledgerFileMtime = stamp;
-    if (map.size) rememberLedger(map);
+    rememberLedger(map);
     return map;
   } catch {
     return ledgerMap;
@@ -564,7 +591,7 @@ function parseLedgerValues(values) {
 
 async function refreshLedger() {
   if (!oauthConfig()) return loadLedgerFile();
-  if (ledgerMap.size && Date.now() - ledgerAt < 45_000) return ledgerMap;
+  if (ledgerStatus.sheet === 'ok' && Date.now() - ledgerAt < 45_000) return ledgerMap;
   if (ledgerRefresh) return ledgerRefresh;
   ledgerRefresh = (async () => {
     try {
@@ -575,12 +602,18 @@ async function refreshLedger() {
       });
       if (!response.ok) {
         console.error('XP ledger sheet', response.status);
+        ledgerStatus.sheet = 'error';
+        ledgerStatus.sheetError = `HTTP ${response.status}`;
         return loadLedgerFile();
       }
       const payload = await response.json();
+      // An empty Sheet is a real answer: everyone is on 0 XP (launch reset).
       const map = parseLedgerValues(payload.values);
-      if (!map.size) return loadLedgerFile();
       rememberLedger(map);
+      ledgerStatus.sheet = 'ok';
+      ledgerStatus.sheetReadAt = new Date().toISOString();
+      ledgerStatus.sheetError = null;
+      void refreshOwnedSheet(token);
       const emails = {};
       for (const [email, xp] of map) emails[email] = xp;
       mkdirSync(path.dirname(ledgerPath), { recursive: true });
@@ -590,12 +623,53 @@ async function refreshLedger() {
       return map;
     } catch (error) {
       console.error('XP ledger', error instanceof Error ? error.message : error);
+      ledgerStatus.sheet = 'error';
+      ledgerStatus.sheetError = error instanceof Error ? error.message : 'error';
       return loadLedgerFile();
     } finally {
       ledgerRefresh = null;
     }
   })();
   return ledgerRefresh;
+}
+
+/** Optional "Owned" tab on the XP Sheet: A = email, B = comma-separated wardrobe ids. */
+async function refreshOwnedSheet(token) {
+  try {
+    const range = encodeURIComponent('Owned!A2:B');
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${xpSheetId}/values/${range}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const map = {};
+    for (const row of payload.values || []) {
+      const key = normalizeEmail(row[0]);
+      if (key.includes('@')) map[key] = String(row[1] || '').split(/[,\s]+/).filter(Boolean);
+    }
+    setOwnedSheet(map);
+  } catch {
+    // tab is optional
+  }
+}
+
+function ledgerHealth() {
+  let fileUpdated = null;
+  try {
+    const raw = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    fileUpdated = raw.updated || new Date(statSync(ledgerPath).mtimeMs).toISOString();
+  } catch {
+    fileUpdated = null;
+  }
+  const newest = ledgerStatus.sheetReadAt || fileUpdated;
+  return {
+    sheet: oauthConfig() ? ledgerStatus.sheet : 'off',
+    sheetReadAt: ledgerStatus.sheetReadAt,
+    sheetError: ledgerStatus.sheetError,
+    fileUpdatedAt: fileUpdated,
+    rows: ledgerMap.size,
+    stale: !newest || Date.now() - Date.parse(newest) > 24 * 60 * 60 * 1000,
+  };
 }
 
 function xpFor(email) {
@@ -621,6 +695,14 @@ function signSession(email) {
   return `${body}.${sig}`;
 }
 
+const revokedPath = path.join(dataDir, 'revoked.json');
+let revoked = {};
+try {
+  revoked = JSON.parse(readFileSync(revokedPath, 'utf8')) || {};
+} catch {
+  revoked = {};
+}
+
 function readSession(header) {
   const token = String(header || '').replace(/^Bearer\s+/i, '').trim();
   const dot = token.lastIndexOf('.');
@@ -634,7 +716,10 @@ function readSession(header) {
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (!payload.email || payload.exp < Date.now()) return null;
-    return normalizeEmail(payload.email);
+    const email = normalizeEmail(payload.email);
+    // A token signed before the account was deleted no longer works.
+    if (revoked[email] && payload.exp - sessionTtlMs <= revoked[email]) return null;
+    return email;
   } catch {
     return null;
   }
@@ -752,7 +837,7 @@ async function handleAuthRequest(req, res) {
     return;
   }
   await refreshLedger();
-  accountFor(email);
+  touchDay1(accountFor(email));
   saveAccounts();
   sendJson(res, 200, { ok: true, email, token: signSession(email) });
 }
@@ -802,6 +887,12 @@ function handleAuthMe(req, res) {
   sendJson(res, 200, { ok: true, email });
 }
 
+function crewPayload(email, account) {
+  const { payload, changed } = crewState(email, xpFor(email), account);
+  if (changed) saveAccounts();
+  return { ok: true, email, ...payload };
+}
+
 async function handleCrewRead(req, res) {
   const email = readSession(req.headers.authorization);
   if (!email) {
@@ -810,7 +901,44 @@ async function handleCrewRead(req, res) {
   }
   await refreshLedger();
   const account = accountFor(email);
-  sendJson(res, 200, { ok: true, email, xp: xpFor(email), fit: account.fit });
+  sendJson(res, 200, crewPayload(email, account));
+}
+
+/**
+ * Deletes the Crew account: wardrobe, issued-code link and every session token.
+ * The XP ledger row is kept only when it comes from the purchase ledger (Sheet);
+ * a row that only exists in the local file is removed.
+ */
+async function handleCrewDelete(req, res) {
+  const email = readSession(req.headers.authorization);
+  if (!email) {
+    sendJson(res, 401, { ok: false, error: 'SESSION' });
+    return;
+  }
+  delete accounts[email];
+  saveAccounts();
+  forgetCodes(email);
+  revoked[email] = Date.now();
+  mkdirSync(path.dirname(revokedPath), { recursive: true });
+  writeFileSync(revokedPath, JSON.stringify(revoked));
+  let ledgerKept = false;
+  try {
+    const raw = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+    if (raw && raw.emails && Object.prototype.hasOwnProperty.call(raw.emails, email)) {
+      if (raw.source === 'sheets') {
+        ledgerKept = true;
+      } else {
+        delete raw.emails[email];
+        raw.rows = Object.keys(raw.emails).length;
+        writeFileSync(ledgerPath, JSON.stringify(raw));
+        ledgerMap.delete(email);
+      }
+    }
+  } catch {
+    // no ledger file
+  }
+  console.log(`Crew account deleted (ledger ${ledgerKept ? 'kept: purchase records' : 'clear'})`);
+  sendJson(res, 200, { ok: true, deleted: true });
 }
 
 async function handleCrewWrite(req, res) {
@@ -828,9 +956,40 @@ async function handleCrewWrite(req, res) {
   }
   await refreshLedger();
   const account = accountFor(email);
-  account.fit = cleanFit(body.fit);
+  const xp = xpFor(email);
+  if (body.fit) account.fit = validFit(cleanFit(body.fit), xp, ownedFor(email));
+  acknowledge(account, xp, body.ack);
   saveAccounts();
-  sendJson(res, 200, { ok: true, email, xp: xpFor(email), fit: account.fit });
+  sendJson(res, 200, crewPayload(email, account));
+}
+
+/**
+ * One-shot launch reset. Set env CREW_RESET_ID to any new value (e.g. "launch-2026-11-23")
+ * and redeploy: on boot the server clears /data/xp-ledger.json and every saved outfit and
+ * popup marker, then records the id so it never runs twice. Also: node server/scripts/launch-reset.mjs
+ */
+function launchReset() {
+  const id = (process.env.CREW_RESET_ID || '').trim();
+  if (!id) return;
+  const markerPath = path.join(dataDir, 'crew-reset.json');
+  let done = null;
+  try {
+    done = JSON.parse(readFileSync(markerPath, 'utf8')).id;
+  } catch {
+    done = null;
+  }
+  if (done === id) return;
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(ledgerPath, JSON.stringify({ source: 'reset', updated: new Date().toISOString(), rows: 0, emails: {} }));
+  for (const account of Object.values(accounts)) {
+    account.fit = emptyFit();
+    delete account.lastLevelSeen;
+    delete account.lastCrewSeen;
+    account.xp = 0;
+  }
+  saveAccounts();
+  writeFileSync(markerPath, JSON.stringify({ id, at: new Date().toISOString() }));
+  console.log(`Crew launch reset ${id}: ledger cleared, outfits cleared`);
 }
 
 const server = createServer((req, res) => {
@@ -880,7 +1039,7 @@ const server = createServer((req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
       res.end();
@@ -899,6 +1058,15 @@ const server = createServer((req, res) => {
     handleAuthMe(req, res);
     return;
   }
+  if (url.pathname === '/api/crew/config' && (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS')) {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Max-Age': '86400' });
+      res.end();
+      return;
+    }
+    sendJson(res, 200, { ok: true, ...crewConfig() });
+    return;
+  }
   if (url.pathname === '/api/crew' && req.method === 'GET') {
     handleCrewRead(req, res);
     return;
@@ -907,8 +1075,18 @@ const server = createServer((req, res) => {
     void handleCrewWrite(req, res);
     return;
   }
+  if (url.pathname === '/api/crew' && req.method === 'DELETE') {
+    void handleCrewDelete(req, res);
+    return;
+  }
   if (url.pathname === '/api/health') {
-    sendJson(res, 200, submissionStatus());
+    void submissionStatus().then((status) => sendJson(res, 200, status));
+    return;
+  }
+  if ((url.pathname === '/spin-rules' || url.pathname === '/spin-rules/') && (req.method === 'GET' || req.method === 'HEAD')) {
+    const body = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'pages', 'spin-rules.html'));
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*' });
+    res.end(req.method === 'HEAD' ? undefined : body);
     return;
   }
   if (req.method === 'OPTIONS' && (url.pathname === '/api/content' || url.pathname === '/api/gallery' || url.pathname.startsWith('/api/poster/'))) {
@@ -958,11 +1136,14 @@ const server = createServer((req, res) => {
   serveStatic(req, res);
 });
 
+launchReset();
 loadLedgerFile();
 initContent(dataDir);
+initCrew(dataDir);
+if (!process.env.AUTH_SECRET) console.error('AUTH_SECRET is not set: sessions use the development secret');
 
 server.listen(port, host, () => {
   console.log(`Reckless site on http://${host}:${port}`);
-  console.log(`Drive folder ${folderId} (${submissionStatus().mode})`);
+  void submissionStatus().then((status) => console.log(`Drive submissions: ${status.mode}`));
   console.log(`XP ledger ${ledgerMap.size} emails`);
 });

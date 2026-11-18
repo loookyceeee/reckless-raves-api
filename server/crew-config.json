@@ -1,0 +1,294 @@
+{
+ "version": 1,
+ "note": "Single source for the app, the game and the toolkit. Swap ranks/wardrobe levels here; the app keeps a bundled fallback.",
+ "crews": [
+  {
+   "id": "fresher",
+   "name": "FRESHER",
+   "merchPercent": 0,
+   "ticketPercent": 0
+  },
+  {
+   "id": "casual",
+   "name": "CASUAL RAVER",
+   "merchPercent": 5,
+   "ticketPercent": 5
+  },
+  {
+   "id": "regular",
+   "name": "RECKLESS REGULAR",
+   "merchPercent": 10,
+   "ticketPercent": 10
+  },
+  {
+   "id": "family",
+   "name": "RECKLESS FAMILY",
+   "merchPercent": 15,
+   "ticketPercent": 15
+  },
+  {
+   "id": "reckless-crew",
+   "name": "RECKLESS CREW",
+   "merchPercent": 20,
+   "ticketPercent": 20
+  }
+ ],
+ "ranks": [
+  {
+   "level": 1,
+   "xp": 0,
+   "crew": 0,
+   "step": "I"
+  },
+  {
+   "level": 2,
+   "xp": 200,
+   "crew": 0,
+   "step": "II"
+  },
+  {
+   "level": 3,
+   "xp": 500,
+   "crew": 0,
+   "step": "III"
+  },
+  {
+   "level": 4,
+   "xp": 1000,
+   "crew": 1,
+   "step": "I"
+  },
+  {
+   "level": 5,
+   "xp": 1800,
+   "crew": 1,
+   "step": "II"
+  },
+  {
+   "level": 6,
+   "xp": 2800,
+   "crew": 1,
+   "step": "III"
+  },
+  {
+   "level": 7,
+   "xp": 4500,
+   "crew": 2,
+   "step": "I"
+  },
+  {
+   "level": 8,
+   "xp": 6500,
+   "crew": 2,
+   "step": "II"
+  },
+  {
+   "level": 9,
+   "xp": 9000,
+   "crew": 2,
+   "step": "III"
+  },
+  {
+   "level": 10,
+   "xp": 13000,
+   "crew": 3,
+   "step": "I"
+  },
+  {
+   "level": 11,
+   "xp": 18000,
+   "crew": 3,
+   "step": "II"
+  },
+  {
+   "level": 12,
+   "xp": 24000,
+   "crew": 3,
+   "step": "III"
+  },
+  {
+   "level": 13,
+   "xp": 32000,
+   "crew": 4,
+   "step": "I"
+  },
+  {
+   "level": 14,
+   "xp": 42000,
+   "crew": 4,
+   "step": "II"
+  },
+  {
+   "level": 15,
+   "xp": 55000,
+   "crew": 4,
+   "step": "III"
+  }
+ ],
+ "wardrobe": [
+  {
+   "id": "skate-tee",
+   "name": "SKATE TEE",
+   "slot": "top",
+   "level": 2
+  },
+  {
+   "id": "rckls-tee",
+   "name": "RCKLS TEE",
+   "slot": "top",
+   "level": 3
+  },
+  {
+   "id": "see-me-shorts",
+   "name": "SEE ME SHORTS",
+   "slot": "legs",
+   "level": 3
+  },
+  {
+   "id": "deject-sleeve",
+   "name": "DEJECT SLEEVE",
+   "slot": "top",
+   "level": 4
+  },
+  {
+   "id": "barrel-jeans",
+   "name": "BARREL JEANS",
+   "slot": "legs",
+   "level": 5
+  },
+  {
+   "id": "moltin-tee",
+   "name": "MOLTIN TEE",
+   "slot": "top",
+   "level": 5
+  },
+  {
+   "id": "stripped-tee",
+   "name": "STRIPPED TEE",
+   "slot": "top",
+   "level": 6
+  },
+  {
+   "id": "seasoned-pants",
+   "name": "SEASONED PANTS",
+   "slot": "legs",
+   "level": 6
+  },
+  {
+   "id": "seasoned-hoodie",
+   "name": "SEASONED HOODIE",
+   "slot": "outer",
+   "level": 7
+  },
+  {
+   "id": "isometric-tee",
+   "name": "ISOMETRIC TEE",
+   "slot": "top",
+   "level": 8
+  },
+  {
+   "id": "artillery",
+   "name": "ARTILLERY CARGOS",
+   "slot": "legs",
+   "level": 8
+  },
+  {
+   "id": "ultra-tee",
+   "name": "ULTRA TEE",
+   "slot": "top",
+   "level": 9
+  },
+  {
+   "id": "stan-bottoms",
+   "name": "STAN BOTTOMS",
+   "slot": "legs",
+   "level": 9
+  },
+  {
+   "id": "rawdwg-zip",
+   "name": "RAWDWG ZIP",
+   "slot": "outer",
+   "level": 10
+  },
+  {
+   "id": "pinner-tee",
+   "name": "PINNER TEE",
+   "slot": "top",
+   "level": 11
+  },
+  {
+   "id": "rawdawg-shorts",
+   "name": "RAWDWG SHORTS",
+   "slot": "legs",
+   "level": 11
+  },
+  {
+   "id": "distress-shirt",
+   "name": "DISTRESS SHIRT",
+   "slot": "top",
+   "level": 12
+  },
+  {
+   "id": "manager-shorts",
+   "name": "MANAGER SHORTS",
+   "slot": "legs",
+   "level": 12
+  },
+  {
+   "id": "manager-zip",
+   "name": "MANAGER ZIP",
+   "slot": "outer",
+   "level": 13
+  },
+  {
+   "id": "see-me-crop",
+   "name": "SEE ME CROP",
+   "slot": "top",
+   "level": 14
+  },
+  {
+   "id": "stan-hoodie",
+   "name": "STAN HOODIE",
+   "slot": "outer",
+   "level": 14
+  },
+  {
+   "id": "rcklstv-jersey",
+   "name": "RCKLSTV JERSEY",
+   "slot": "top",
+   "level": 15
+  },
+  {
+   "id": "mesh-jersey",
+   "name": "MESH JERSEY",
+   "slot": "top",
+   "level": 15
+  }
+ ],
+ "rewards": [
+  {
+   "id": "badge",
+   "level": 1,
+   "name": "CREW BADGE",
+   "kind": "digital"
+  },
+  {
+   "id": "stickers",
+   "level": 2,
+   "name": "STICKER PACK",
+   "kind": "digital"
+  },
+  {
+   "id": "wallpaper",
+   "level": 3,
+   "name": "WALLPAPER",
+   "kind": "digital"
+  }
+ ],
+ "day1": {
+  "id": "day1",
+  "name": "DAY 1 CREW",
+  "from": "2026-11-23T00:00:00Z",
+  "to": "2026-11-30T00:00:00Z"
+ }
+}

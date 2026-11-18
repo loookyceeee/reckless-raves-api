@@ -537,9 +537,32 @@ export async function handleContent(req, res, sendJson) {
   sendJson(res, 200, body);
 }
 
+const POSTER_WIDTHS = new Set([360, 540, 720]);
+
 export function handlePoster(req, res, url) {
+  const width = Number(url.searchParams.get('w') || 0);
+  if (POSTER_WIDTHS.has(width)) {
+    const m0 = url.pathname.match(/^\/api\/poster\/((?:drive|skiddle)-[A-Za-z0-9_-]+)\.jpg$/);
+    const source = m0 ? posterFile(m0[1]) : null;
+    if (source && existsSync(source)) {
+      const sized = `${source}.w${width}.jpg`;
+      const send = () => sendPosterFile(req, res, sized);
+      if (existsSync(sized) && statSync(sized).mtimeMs >= statSync(source).mtimeMs) return send();
+      // Phone-size copy (about a tenth of the full poster), cached next to the original.
+      sharp()(source)
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality: 82, mozjpeg: true })
+        .toFile(sized)
+        .then(send)
+        .catch(() => sendPosterFile(req, res, source));
+      return;
+    }
+  }
   const m = url.pathname.match(/^\/api\/poster\/((?:drive|skiddle)-[A-Za-z0-9_-]+)\.jpg$/);
-  const file = m ? posterFile(m[1]) : null;
+  sendPosterFile(req, res, m ? posterFile(m[1]) : null);
+}
+
+function sendPosterFile(req, res, file) {
   if (!file || !existsSync(file)) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
