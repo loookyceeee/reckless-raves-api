@@ -254,8 +254,19 @@ function titleCase(value) {
   return v.toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase());
 }
 
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-GB,en;q=0.9',
+};
+
 async function skiddleEvent(id) {
-  const html = await get(`https://www.skiddle.com/e/${id}`);
+  const res = await fetch(`https://www.skiddle.com/e/${id}`, { headers: BROWSER_HEADERS, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+  const html = await res.text();
+  if (!res.ok || !html.includes('ld+json')) {
+    const title = (html.match(/<title>([^<]*)<\/title>/i) || [])[1] || '';
+    console.error('Skiddle page', id, res.status, res.url, title.slice(0, 80), html.length);
+  }
   for (const m of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/g)) {
     let data;
     try { data = JSON.parse(m[1]); } catch { continue; }
