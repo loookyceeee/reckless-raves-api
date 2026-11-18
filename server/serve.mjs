@@ -911,6 +911,16 @@ const server = createServer((req, res) => {
     sendJson(res, 200, submissionStatus());
     return;
   }
+  if (req.method === 'OPTIONS' && (url.pathname === '/api/content' || url.pathname === '/api/gallery' || url.pathname.startsWith('/api/poster/'))) {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
   if (url.pathname === '/api/content' && (req.method === 'GET' || req.method === 'HEAD')) {
     void handleContent(req, res, sendJson).catch(() => {
       if (!res.headersSent) sendJson(res, 502, { ok: false, error: 'CONTENT' });

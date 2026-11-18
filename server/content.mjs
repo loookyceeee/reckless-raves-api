@@ -128,8 +128,24 @@ async function loadRecords() {
 }
 
 // ---------- Drive posters ----------
+let folderCache = new Map(); // per refresh
+
 async function listFolder(id) {
-  const html = await get(`https://drive.google.com/embeddedfolderview?id=${id}`);
+  if (folderCache.has(id)) return folderCache.get(id);
+  let html = '';
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      html = await get(`https://drive.google.com/embeddedfolderview?id=${id}`);
+      // A rate-limit or sign-in page also comes back 200; only trust a real folder view.
+      if (html.includes('flip-entries') || html.includes('flip-entry')) { lastError = null; break; }
+      lastError = new Error('not a folder view');
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+  }
+  if (lastError) throw new Error(`Drive folder ${id}: ${lastError instanceof Error ? lastError.message : lastError}`);
   const entries = [];
   for (const m of html.matchAll(/<div class="flip-entry" id="entry-([A-Za-z0-9_-]+)"[\s\S]*?<div class="flip-entry-title">([^<]*)<\/div>/g)) {
     const entryId = m[1];
@@ -138,6 +154,7 @@ async function listFolder(id) {
     const folder = block.includes('/drive/folders/') || /folder/i.test((block.match(/flip-entry-list-icon[\s\S]*?<img src="([^"]*)"/) || [])[1] || '');
     entries.push({ id: entryId, name, folder });
   }
+  folderCache.set(id, entries);
   return entries;
 }
 
@@ -182,9 +199,14 @@ async function drivePosterFor(event, folders) {
     .map((f) => ({ f, score: folderMatches(f.name, event) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score);
+  let incomplete = false;
   for (const { f } of ranked) {
     let files = [];
-    try { files = await listFolder(f.id); } catch { continue; }
+    try { files = await listFolder(f.id); } catch (error) {
+      incomplete = true;
+      console.error('Poster folder failed', f.name, error instanceof Error ? error.message : error);
+      continue;
+    }
     const eventWords = ` ${norm(`${event.rawName} ${event.title} ${event.subtitle}`).replace(/ /g, '')} `;
     const candidates = files
       .filter((x) => !x.folder && /\.(jpe?g|png|webp)$/i.test(x.name) && !/STORY|COVER/i.test(x.name))
@@ -206,11 +228,12 @@ async function drivePosterFor(event, folders) {
         const size = await probeDrive(file.id);
         if (isPosterSize(size)) return { key: `drive-${file.id}`, folder: f.name, file: file.name, size };
       } catch (error) {
+        incomplete = true;
         console.error('Poster probe failed', file.name, error instanceof Error ? error.message : error);
       }
     }
   }
-  return null;
+  return incomplete ? { incomplete: true } : null;
 }
 
 function posterFile(key) {
@@ -352,6 +375,7 @@ async function loadEvents(previous) {
   const page = await get(EVENTS_PAGE);
   const ids = [...new Set([...page.matchAll(/skiddle\.com\/(?:e\/|whats-on\/[^"'\s<>]*?\/)(\d{6,10})/g)].map((m) => m[1]))];
   if (!ids.length) throw new Error('No Skiddle links on events page');
+  folderCache = new Map();
   let folders = [];
   try { folders = (await listFolder(POSTER_FOLDER)).filter((x) => x.folder); } catch (error) {
     console.error('Poster folder list failed', error instanceof Error ? error.message : error);
@@ -389,7 +413,18 @@ async function loadEvents(previous) {
       try { poster = await drivePosterFor(event, folders); } catch (error) {
         console.error('Drive poster failed', sid, error instanceof Error ? error.message : error);
       }
-      if (poster) {
+      const prevPoster = prevById.get(sid);
+      if (poster?.incomplete) {
+        // Drive hiccup: keep the last good Drive poster instead of dropping to Skiddle.
+        poster = null;
+        if (prevPoster?.poster?.source === 'drive' && prevPoster.image) {
+          event.image = prevPoster.image;
+          event.poster = prevPoster.poster;
+        }
+      }
+      if (event.image) {
+        // kept from the previous refresh
+      } else if (poster) {
         posters[poster.key] = { kind: 'drive', folder: poster.folder, file: poster.file };
         event.image = `/api/poster/${poster.key}.jpg`;
         event.poster = { source: 'drive', folder: poster.folder, file: poster.file, width: POSTER_W, height: POSTER_H };
