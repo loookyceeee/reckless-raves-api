@@ -127,10 +127,17 @@ export function ownedFor(email) {
 export function validFit(fit, xp, owned = []) {
   const { level } = standing(xp);
   const next = { top: null, outer: null, legs: null };
-  if (!fit || typeof fit !== 'object') return next;
+  const given = fit && typeof fit === 'object' ? fit : {};
   for (const slot of Object.keys(next)) {
-    const piece = config.wardrobe.find((item) => item.id === fit[slot]);
+    const piece = config.wardrobe.find((item) => item.id === given[slot]);
     if (piece && piece.slot === slot && (piece.level <= level || owned.includes(piece.id))) next[slot] = piece.id;
+  }
+  // Nobody renders without a top or bottoms: an empty or clamped top/legs slot gets the
+  // starter piece (crew config starterFit: Skate Tee / Barrel Jeans, both L1). Outer stays optional.
+  for (const slot of ['top', 'legs']) {
+    if (next[slot]) continue;
+    const starter = config.wardrobe.find((item) => item.id === config.starterFit?.[slot]);
+    if (starter && starter.slot === slot) next[slot] = starter.id;
   }
   return next;
 }
