@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validFit } from './crew.mjs';
+import { acknowledge, avatarBaseOf, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -898,9 +898,10 @@ function cleanFit(fit) {
 
 function accountFor(email) {
   const key = normalizeEmail(email);
-  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit() };
+  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit(), avatarBase: 'male' };
   accounts[key].fit = cleanFit(accounts[key].fit);
   accounts[key].xp = Math.max(0, Math.floor(Number(accounts[key].xp) || 0));
+  accounts[key].avatarBase = avatarBaseOf(accounts[key]);
   return accounts[key];
 }
 
@@ -1115,9 +1116,121 @@ async function handleCrewWrite(req, res) {
   const account = accountFor(email);
   const xp = xpFor(email);
   if (body.fit) account.fit = validFit(cleanFit(body.fit), xp, ownedFor(email));
+  if (body.avatarBase !== undefined) {
+    const next = validAvatarBase(body.avatarBase);
+    if (!next) {
+      sendJson(res, 400, { ok: false, error: 'AVATAR_BASE' });
+      return;
+    }
+    account.avatarBase = next;
+  }
   acknowledge(account, xp, body.ack);
   saveAccounts();
   sendJson(res, 200, crewPayload(email, account));
+}
+
+
+const siteOrigins = new Set(['https://recklessraves.co.uk', 'https://www.recklessraves.co.uk']);
+const writeHits = new Map();
+const writeLimitMax = 30;
+const writeLimitWindowMs = 60 * 1000;
+
+function clientIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim() || 'unknown';
+}
+
+function rateLimited(key, max = writeLimitMax, windowMs = writeLimitWindowMs) {
+  const now = Date.now();
+  const hits = (writeHits.get(key) || []).filter((at) => now - at < windowMs);
+  if (hits.length >= max) {
+    writeHits.set(key, hits);
+    return true;
+  }
+  hits.push(now);
+  writeHits.set(key, hits);
+  return false;
+}
+
+function sendAvatarJson(req, res, status, payload, { open = false } = {}) {
+  const body = JSON.stringify(payload);
+  const origin = String(req.headers.origin || '');
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+  if (open) {
+    headers['Access-Control-Allow-Origin'] = '*';
+  } else if (siteOrigins.has(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Vary'] = 'Origin';
+  } else if (origin) {
+    headers['Vary'] = 'Origin';
+  }
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function existingAccount(email) {
+  const key = normalizeEmail(email);
+  return Object.prototype.hasOwnProperty.call(accounts, key) ? accountFor(key) : null;
+}
+
+function handleAvatarBaseOptions(req, res) {
+  const origin = String(req.headers.origin || '');
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+  };
+  const requestMethod = String(req.headers['access-control-request-method'] || '').toUpperCase();
+  if (requestMethod === 'PUT') {
+    if (siteOrigins.has(origin)) headers['Access-Control-Allow-Origin'] = origin;
+    headers['Vary'] = 'Origin';
+  } else {
+    headers['Access-Control-Allow-Origin'] = '*';
+  }
+  res.writeHead(204, headers);
+  res.end();
+}
+
+function handleAvatarBaseRead(req, res, url) {
+  const email = normalizeEmail(url.searchParams.get('email'));
+  if (!validEmail(email)) {
+    sendAvatarJson(req, res, 400, { ok: false, error: 'EMAIL' }, { open: true });
+    return;
+  }
+  const account = existingAccount(email);
+  sendAvatarJson(req, res, 200, { avatarBase: account ? avatarBaseOf(account) : 'male' }, { open: true });
+}
+
+async function handleAvatarBaseWrite(req, res, url) {
+  const email = normalizeEmail(url.searchParams.get('email'));
+  if (!validEmail(email)) {
+    sendAvatarJson(req, res, 400, { ok: false, error: 'EMAIL' });
+    return;
+  }
+  if (rateLimited(`avatar-base:ip:${clientIp(req)}`) || rateLimited(`avatar-base:email:${email}`)) {
+    sendAvatarJson(req, res, 429, { ok: false, error: 'RATE' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    sendAvatarJson(req, res, 400, { ok: false, error: 'AVATAR_BASE' });
+    return;
+  }
+  const next = validAvatarBase(body?.avatarBase);
+  if (!next) {
+    sendAvatarJson(req, res, 400, { ok: false, error: 'AVATAR_BASE' });
+    return;
+  }
+  const account = accountFor(email);
+  account.avatarBase = next;
+  saveAccounts();
+  sendAvatarJson(req, res, 200, { avatarBase: account.avatarBase });
 }
 
 /**
@@ -1224,6 +1337,22 @@ const server = createServer((req, res) => {
       return;
     }
     sendJson(res, 200, { ok: true, ...crewConfig() });
+    return;
+  }
+  if (url.pathname === '/api/crew/avatar-base') {
+    if (req.method === 'OPTIONS') {
+      handleAvatarBaseOptions(req, res);
+      return;
+    }
+    if (req.method === 'GET') {
+      handleAvatarBaseRead(req, res, url);
+      return;
+    }
+    if (req.method === 'PUT') {
+      void handleAvatarBaseWrite(req, res, url);
+      return;
+    }
+    sendAvatarJson(req, res, 405, { ok: false, error: 'METHOD' }, { open: true });
     return;
   }
   if (url.pathname === '/api/crew' && req.method === 'GET') {

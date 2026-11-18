@@ -389,6 +389,20 @@ export function touchDay1(account) {
   return false;
 }
 
+
+const AVATAR_BASES = new Set(['male', 'female']);
+
+/** Returns 'male' or 'female', or null if the value is missing/invalid. */
+export function validAvatarBase(value) {
+  const next = String(value || '').trim().toLowerCase();
+  return AVATAR_BASES.has(next) ? next : null;
+}
+
+/** Stored per email; missing or invalid values read as the default, 'male'. */
+export function avatarBaseOf(account) {
+  return validAvatarBase(account?.avatarBase) || 'male';
+}
+
 /**
  * Full crew payload. lastCrewSeen / lastLevelSeen are stored per email; when the
  * current standing is above them the payload carries `crewUp` / `levelUp`, and the
@@ -433,7 +447,7 @@ export function crewState(email, xp, account) {
   const badges = config.rewards.filter((reward) => reward.level <= level).map((reward) => reward.id);
   if (account.day1) badges.push('day1');
   return {
-    payload: { xp, level, crew, fit: account.fit, owned, codes, badges, levelUp, crewUp },
+    payload: { xp, level, crew, fit: account.fit, avatarBase: avatarBaseOf(account), owned, codes, badges, levelUp, crewUp },
     changed: changed || codesChanged,
   };
 }
