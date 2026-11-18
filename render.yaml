@@ -29,3 +29,5 @@ services:
         sync: false
       - key: XP_SHEET_ID
         sync: false
+      - key: SKIDDLE_API_KEY
+        sync: false

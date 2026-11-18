@@ -274,7 +274,13 @@ function seedFor(id) {
 }
 
 async function skiddleApiEvent(id) {
-  const data = await get(`https://www.skiddle.com/api/v1/events/${id}/?api_key=${encodeURIComponent(SKIDDLE_KEY)}`, { as: 'json' });
+  let data;
+  try {
+    data = await get(`https://www.skiddle.com/api/v1/events/${id}/?api_key=${encodeURIComponent(SKIDDLE_KEY)}`, { as: 'json' });
+  } catch (error) {
+    // Never log the request URL: it carries the API key.
+    throw new Error(`Skiddle API request failed (${String(error instanceof Error ? error.message : error).split(' ')[0]})`);
+  }
   const d = data?.results;
   if (!d || data.error) throw new Error(`Skiddle API ${data?.errormessage || 'no result'}`);
   return {
@@ -292,7 +298,13 @@ async function skiddleApiEvent(id) {
 // cloud IPs, including Render's).
 async function skiddleEvent(id) {
   if (SKIDDLE_KEY) {
-    try { return await skiddleApiEvent(id); } catch (error) {
+    try {
+      const live = await skiddleApiEvent(id);
+      // The API often lists fewer artists than the event page; keep the fuller known lineup.
+      const known = seedFor(id)?.performer;
+      if (Array.isArray(known) && known.length > (live.performer?.length || 0)) live.performer = known;
+      return live;
+    } catch (error) {
       console.error('Skiddle API failed', id, error instanceof Error ? error.message : error);
     }
   }
@@ -350,7 +362,7 @@ async function loadEvents(previous) {
         title: o.title || names.title,
         subtitle: o.subtitle ?? names.subtitle,
         venue: o.venue || titleCase(ld.location?.name || ''),
-        city: ld.location?.address?.addressLocality || 'Belfast',
+        city: titleCase(ld.location?.address?.addressLocality || 'Belfast'),
         lineup: o.lineup || (Array.isArray(ld.performer) ? ld.performer.map((p) => p?.name).filter(Boolean) : []),
         ticketsUrl: `https://www.skiddle.com/e/${sid}`,
         image: null,
