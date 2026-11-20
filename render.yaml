@@ -31,3 +31,6 @@ services:
         sync: false
       - key: SKIDDLE_API_KEY
         sync: false
+      # Optional Behold.so JSON feed (https://feeds.behold.so/…). Leave unset until the website supplies a URL.
+      - key: BEHOLD_FEED_URL
+        sync: false

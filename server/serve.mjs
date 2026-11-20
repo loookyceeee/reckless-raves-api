@@ -24,7 +24,7 @@ const photoAlbums = [
   ['the-warehouse-xl-halloween-special', 'THE WARE-HOUSE XL HALLOWEEN SPECIAL'],
   ['the-ignition', 'THE IGNITION'],
   ['the-temple-006', 'THE TEMPLE 006'],
-  ['the-temple-008', 'THE TEMPLE 007'],
+  ['the-temple-007', 'THE TEMPLE 007'],
   ['terminus', 'TERMINUS'],
   ['the-cage-of-chaos', 'THE CAGE OF CHAOS'],
   ['project-one-f5w4d-7r8zz', 'THE WAREHOUSE XL 003'],
@@ -452,6 +452,12 @@ function validEmail(value) {
 }
 
 async function handleSubmit(req, res) {
+  // Public /labels form: 5 submissions per IP per hour, before the body is parsed.
+  if (rateLimited(`submit:ip:${clientIp(req)}`, 5, 60 * 60 * 1000)) {
+    req.resume();
+    sendJson(res, 429, { ok: false, error: 'RATE_LIMIT' });
+    return;
+  }
   if (!(await driveHealthy())) {
     req.resume();
     sendJson(res, 503, { ok: false, error: 'PENDING', drive: false });

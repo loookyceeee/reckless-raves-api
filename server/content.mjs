@@ -255,8 +255,17 @@ async function renderPoster(key, buffer, mode) {
   return out;
 }
 
+// Skiddle's largeimageurl / imageurl, or the page JSON-LD image (string, ImageObject, or a list).
+function skiddleImageUrl(image) {
+  let value = image;
+  if (Array.isArray(value)) value = value[0];
+  if (value && typeof value === 'object') value = value.url || value.contentUrl || '';
+  const url = typeof value === 'string' ? value.trim() : '';
+  return url || null;
+}
+
 async function skiddlePoster(image, skiddleId) {
-  if (!image) return null;
+  if (!image || typeof image !== 'string') return null;
   const key = `skiddle-${skiddleId}`;
   if (existsSync(posterFile(key))) return key;
   const big = image.replace(/_\d+\.(jpe?g|png)$/i, '_orig.$1');
@@ -446,6 +455,7 @@ async function loadEvents(previous) {
         lineup: o.lineup || (Array.isArray(ld.performer) ? ld.performer.map((p) => p?.name).filter(Boolean) : []),
         ticketsUrl: `https://www.skiddle.com/e/${sid}`,
         image: null,
+        skiddleImage: skiddleImageUrl(ld.image),
         poster: null,
         dataSource: ld.seeded ? 'seed' : SKIDDLE_KEY && !ld['@type'] ? 'skiddle-api' : 'skiddle-page',
       };
@@ -471,7 +481,7 @@ async function loadEvents(previous) {
         event.image = `/api/poster/${poster.key}.jpg`;
         event.poster = { source: 'drive', folder: poster.folder, file: poster.file, width: POSTER_W, height: POSTER_H };
       } else {
-        const key = await skiddlePoster(typeof ld.image === 'string' ? ld.image : ld.image?.[0], sid).catch(() => null);
+        const key = await skiddlePoster(event.skiddleImage, sid).catch(() => null);
         if (key) {
           event.image = `/api/poster/${key}.jpg`;
           event.poster = { source: 'skiddle', width: POSTER_W, height: POSTER_H };
@@ -485,7 +495,9 @@ async function loadEvents(previous) {
     } catch (error) {
       console.error('Skiddle event failed', sid, error instanceof Error ? error.message : error);
       const prev = prevById.get(sid);
-      if (prev && (Date.parse(prev.endDate || prev.startDate) || 0) >= now) out.push(prev);
+      if (prev && (Date.parse(prev.endDate || prev.startDate) || 0) >= now) {
+        out.push({ ...prev, skiddleImage: prev.skiddleImage || null });
+      }
     }
   }
   out.sort((a, b) => Date.parse(a.startDate) - Date.parse(b.startDate));
@@ -545,6 +557,51 @@ async function section(name, loader) {
   }
 }
 
+const INSTAGRAM_USERNAME = 'reckless.raves';
+// Optional Behold.so JSON feed (https://feeds.behold.so/…). Leave unset until the
+// website team supplies a URL. Unset, unreachable, or an unexpected payload keeps
+// followers_count null and never fails records, events, or products.
+function beholdFeedUrl() {
+  return (process.env.BEHOLD_FEED_URL || '').trim();
+}
+
+let instagramFollowers = null;
+let instagramRefresh = null;
+
+function beholdFollowerCount(data) {
+  const raw = data && typeof data === 'object' ? data.followersCount : undefined;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
+function refreshInstagram() {
+  if (instagramRefresh) return instagramRefresh;
+  instagramRefresh = (async () => {
+    const url = beholdFeedUrl();
+    if (!url) {
+      instagramFollowers = null;
+      return;
+    }
+    try {
+      const data = await get(url, { as: 'json', timeout: 8000 });
+      const count = beholdFollowerCount(data);
+      if (count != null) instagramFollowers = count;
+    } catch {
+      // The feed URL can identify the Behold feed. Do not log it.
+      console.error('Behold feed failed');
+    }
+  })().finally(() => { instagramRefresh = null; });
+  return instagramRefresh;
+}
+
+function instagramPayload() {
+  return {
+    username: INSTAGRAM_USERNAME,
+    followers_count: beholdFeedUrl() ? instagramFollowers : null,
+  };
+}
+
 export function refreshContent() {
   if (!dataDir) return Promise.resolve();
   if (refreshing) return refreshing;
@@ -554,6 +611,7 @@ export function refreshContent() {
       section('records', loadRecords),
       section('products', loadProducts),
       section('events', () => loadEvents(previousEvents)),
+      refreshInstagram(),
     ]);
     state.updatedAt = new Date().toISOString();
     persist();
@@ -617,7 +675,7 @@ export async function handleContent(req, res, sendJson) {
       new Promise((resolve) => setTimeout(resolve, 8000)),
     ]);
   }
-  const body = { ok: true, updatedAt: state.updatedAt, refreshMinutes: REFRESH_MS / 60000, records: state.records, events: state.events, products: state.products, nextDrop: nextDrop(), status: state.status };
+  const body = { ok: true, updatedAt: state.updatedAt, refreshMinutes: REFRESH_MS / 60000, records: state.records, events: state.events, products: state.products, instagram: instagramPayload(), nextDrop: nextDrop(), status: state.status };
   res.setHeader('Cache-Control', 'public, max-age=300');
   sendJson(res, 200, body);
 }
