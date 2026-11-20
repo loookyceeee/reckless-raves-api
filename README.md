@@ -4,13 +4,16 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
 
 ## Public endpoints (CORS `*`, used by recklessraves.co.uk)
 
-- `GET /api/content` – records, events (Skiddle + Drive posters), shop, and optional `nextDrop` (`{ at, name?, url? }`).
+- `GET /api/content` – records, events (Skiddle + Drive posters), shop, `instagram` (`{ username: "reckless.raves", followers_count }`), and optional `nextDrop` (`{ at, name?, url? }`).
+  `followers_count` is a number only when env `BEHOLD_FEED_URL` is a Behold JSON feed that returns `followersCount`; it is `null` when that URL is unset, unreachable, or has no count. Records, events, and products do not depend on it.
+  Each event includes `skiddleImage` (the Skiddle image URL) when Skiddle sent one. `image` stays the Drive poster when that exists, and otherwise the processed Skiddle poster.
   `nextDrop` comes from env `NEXT_DROP` (JSON or a bare ISO date), `/data/next-drop.json`, or the bundled `server/next-drop.json` (RCKLS019, 12 Dec 2026 14:00 Europe/London, clothing shop). It is omitted when unset, invalid, or already past.
   Each event may carry `ticketStatus`: `"soldout"` (Skiddle single-event API
   `ticketStatus === "0"` with `tickets: true`) or `"sellingfast"` (Skiddle search
   API `hotSeller: true`). Omitted otherwise, for cancelled events, and whenever
   the data came from the Skiddle page or seed fallback instead of the API.
   CORS (`Access-Control-Allow-Origin: *`) is applied to every response, including errors and cached poster/content paths.
+- `POST /api/submit` – track upload to the Drive submissions folder (50MB cap unchanged). 5 requests per IP per hour; the next returns `429 { ok: false, error: "RATE_LIMIT" }` before the file is parsed.
 - `GET /api/poster/<file>[?w=360|540|720]` – posters; `w` serves a cached phone-size JPEG.
 - `GET /api/gallery` – albums with `coverUrl` (1200w), `coverThumb` (750w), `images[].url` (1600w), `thumb` (750w), `full` (1500w).
 - `GET /api/crew/config` – ladder, crews, wardrobe, digital rewards.
@@ -53,4 +56,4 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
 
 ## Environment
 
-`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off) and `CREW_RESET_ID`. Never commit values.
+`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off) and `CREW_RESET_ID`. Never commit values.
