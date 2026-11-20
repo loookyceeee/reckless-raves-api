@@ -4,6 +4,7 @@
 // source fails, and the last good payload survives restarts on the disk.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream, statSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -575,13 +576,19 @@ export function initContent(dir) {
  * Source: env NEXT_DROP (JSON, or a bare ISO date) or DATA_DIR/next-drop.json. Null when unset,
  * invalid or already past, so the app shows nothing.
  */
+const bundledDropPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'next-drop.json');
+
 export function nextDrop(now = Date.now()) {
   let raw = (process.env.NEXT_DROP || '').trim();
   if (!raw) {
-    try {
-      raw = readFileSync(path.join(dataDir, 'next-drop.json'), 'utf8').trim();
-    } catch {
-      raw = '';
+    for (const file of [dataDir ? path.join(dataDir, 'next-drop.json') : '', bundledDropPath]) {
+      if (!file) continue;
+      try {
+        raw = readFileSync(file, 'utf8').trim();
+      } catch {
+        raw = '';
+      }
+      if (raw) break;
     }
   }
   if (!raw) return null;
@@ -601,7 +608,15 @@ export function nextDrop(now = Date.now()) {
 
 export async function handleContent(req, res, sendJson) {
   if (!dataDir) throw new Error('content not initialised');
-  if (!state.updatedAt) await refreshContent().catch(() => {});
+  if (!state.updatedAt) {
+    // Don't let a cold refresh hang the request long enough for the proxy to
+    // return a headerless timeout. 8s is enough for a warm cache, short enough
+    // to still answer with CORS.
+    await Promise.race([
+      refreshContent().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 8000)),
+    ]);
+  }
   const body = { ok: true, updatedAt: state.updatedAt, refreshMinutes: REFRESH_MS / 60000, records: state.records, events: state.events, products: state.products, nextDrop: nextDrop(), status: state.status };
   res.setHeader('Cache-Control', 'public, max-age=300');
   sendJson(res, 200, body);
@@ -634,7 +649,7 @@ export function handlePoster(req, res, url) {
 
 function sendPosterFile(req, res, file) {
   if (!file || !existsSync(file)) {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
     res.end('Not found');
     return;
   }

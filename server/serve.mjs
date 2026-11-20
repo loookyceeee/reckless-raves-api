@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
+import { attachCors } from './cors.mjs';
 import { avatarManifest, handleAvatarAsset } from './avatar.mjs';
 import { checkLevelUps, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
 import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
@@ -1583,6 +1584,8 @@ function launchReset() {
 }
 
 const server = createServer((req, res) => {
+  attachCors(res);
+  try {
   const url = new URL(req.url || '/', 'http://localhost');
   if (wheelApiPaths.has(url.pathname)) {
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'HEAD') {
@@ -1795,6 +1798,10 @@ const server = createServer((req, res) => {
     return;
   }
   serveStatic(req, res);
+  } catch (error) {
+    console.error('Request failed', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: 'SERVER' });
+  }
 });
 
 launchReset();
