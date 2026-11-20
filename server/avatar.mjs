@@ -10,12 +10,26 @@ import { fileURLToPath } from 'node:url';
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'avatar');
 const BASES = ['male', 'female'];
+
+/**
+ * Character art is NOT public until Luke approves it. Until AVATAR_ART_LIVE=1 the manifest only
+ * says { live: false, draft: true } and the male/female layer URLs return 404. Approved PNGs go in
+ * server/avatar/<base>/ (same file names as the app's layers) before the flag is turned on.
+ */
+export const avatarArtLive = () => /^(1|true|yes|on)$/i.test((process.env.AVATAR_ART_LIVE || '').trim());
+const pngs = (sub) => {
+  try {
+    return readdirSync(path.join(dir, sub)).filter((name) => name.endsWith('.png'));
+  } catch {
+    return [];
+  }
+};
 let cached = null;
 
 function version() {
   const hash = createHash('sha256');
   for (const sub of [...BASES, 'icons']) {
-    for (const name of readdirSync(path.join(dir, sub)).sort()) {
+    for (const name of pngs(sub).sort()) {
       hash.update(`${sub}/${name}`);
       hash.update(readFileSync(path.join(dir, sub, name)));
     }
@@ -24,6 +38,9 @@ function version() {
 }
 
 export function avatarManifest(origin, wardrobe = []) {
+  if (!avatarArtLive() || BASES.some((base) => pngs(base).length === 0)) {
+    return { ok: true, live: false, draft: true, message: 'CHARACTER ART IS NOT PUBLISHED YET', size: { width: 540, height: 720 }, bases: {} };
+  }
   if (!cached) {
     const pieces = JSON.parse(readFileSync(path.join(dir, 'pieces.json'), 'utf8'));
     cached = { pieces, v: version() };
@@ -42,6 +59,8 @@ export function avatarManifest(origin, wardrobe = []) {
   }
   return {
     ok: true,
+    live: true,
+    draft: false,
     version: v,
     size: { width: 540, height: 720 },
     order: 'Draw lower first (the legs piece, else body.lower), then upper (the outer piece, else the top piece, else body.upper).',
@@ -59,6 +78,11 @@ export function avatarManifest(origin, wardrobe = []) {
 export function handleAvatarAsset(req, res, url) {
   const match = url.pathname.match(/^\/avatar\/(male|female|icons)\/([a-z0-9-]+\.png)$/);
   if (!match) return false;
+  if (match[1] !== 'icons' && !avatarArtLive()) {
+    res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    res.end('Not found');
+    return true;
+  }
   const file = path.join(dir, match[1], match[2]);
   if (!existsSync(file)) {
     res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
