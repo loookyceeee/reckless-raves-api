@@ -1397,7 +1397,7 @@ function handlePinStatus(req, res, url) {
     sendPinJson(req, res, 429, { ok: false, error: 'RATE' });
     return;
   }
-  sendPinJson(req, res, 200, { ok: true, hasPin: hasPin(existingAccount(email)) });
+  sendPinJson(req, res, 200, { ok: true, hasPin: hasPin(existingAccount(email)), setupLive: pinSetupLive() });
 }
 
 /** POST /api/crew/pin?email= { pin } sets a first PIN; { currentPin, pin } changes it. */
