@@ -1511,7 +1511,8 @@ async function handlePushRegister(req, res) {
 
 /**
  * POST /api/push/send (X-Admin-Key) { title, body, data?, tokens? | emails? | topic? | all: true, dryRun? }.
- * Fans are only reached when PUSH_LIVE=1; otherwise it is a dry run unless explicit test tokens are named.
+ * Fans are only reached when PUSH_LIVE=1; otherwise it is a dry run unless explicit test tokens are named
+ * (or test: true with exactly one email that has 1-3 devices).
  */
 async function handlePushSend(req, res) {
   if (!adminKeyOk(String(req.headers['x-admin-key'] || ''))) {
@@ -1531,8 +1532,10 @@ async function handlePushSend(req, res) {
     sendJson(res, 400, { ok: false, error: 'MESSAGE' });
     return;
   }
-  const explicit = Array.isArray(body.tokens) && body.tokens.length > 0;
+  // A test send to one named email's devices (max 3) counts as explicit, so it works while PUSH_LIVE is off.
+  const testOne = body.test === true && Array.isArray(body.emails) && body.emails.length === 1 && !body.topic && body.all !== true;
   const tokens = targetTokens(body);
+  const explicit = (Array.isArray(body.tokens) && body.tokens.length > 0) || (testOne && tokens.length > 0 && tokens.length <= 3);
   if (!tokens.length) {
     sendJson(res, 400, { ok: false, error: 'TARGET', message: 'NAME tokens, emails, topic OR all: true' });
     return;
