@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleContent, handlePoster, initContent } from './content.mjs';
-import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
+import { avatarManifest, handleAvatarAsset } from './avatar.mjs';
+import { checkLevelUps, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
+import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -825,6 +827,7 @@ function ledgerHealth() {
     rows: ledgerMap.size,
     issuedQueued: issuedQueueLength(),
     crewCodes: codePoolStatus(),
+    push: pushStatus(),
     stale: !newest || Date.now() - Date.parse(newest) > 24 * 60 * 60 * 1000,
   };
 }
@@ -1091,6 +1094,7 @@ async function handleCrewDelete(req, res) {
   delete accounts[email];
   saveAccounts();
   forgetCodes(email);
+  forgetDevices(email);
   revoked[email] = Date.now();
   mkdirSync(path.dirname(revokedPath), { recursive: true });
   writeFileSync(revokedPath, JSON.stringify(revoked));
@@ -1475,6 +1479,78 @@ function handlePinReset(req, res, url) {
   sendJson(res, 200, { ok: true, hasPin: false, cleared: had });
 }
 
+/* ---------- Push notifications ---------- */
+
+/** POST /api/push/register { token, platform, deviceId, topics? }; signed-in fans send Authorization. DELETE { token } removes it. */
+async function handlePushRegister(req, res) {
+  if (rateLimited(`push:ip:${clientIp(req)}`)) {
+    sendJson(res, 429, { ok: false, error: 'RATE' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'TOKEN' });
+    return;
+  }
+  const token = String(body?.token || '');
+  if (!validPushToken(token)) {
+    sendJson(res, 400, { ok: false, error: 'TOKEN' });
+    return;
+  }
+  if (req.method === 'DELETE') {
+    sendJson(res, 200, { ok: true, removed: unregisterDevice(token) });
+    return;
+  }
+  const email = req.headers.authorization ? readSession(req.headers.authorization) : null;
+  const row = registerDevice({ token, email, platform: body.platform, deviceId: body.deviceId, topics: body.topics });
+  sendJson(res, 200, { ok: true, signedIn: Boolean(row.email), topics: row.topics });
+}
+
+/**
+ * POST /api/push/send (X-Admin-Key) { title, body, data?, tokens? | emails? | topic? | all: true, dryRun? }.
+ * Fans are only reached when PUSH_LIVE=1; otherwise it is a dry run unless explicit test tokens are named.
+ */
+async function handlePushSend(req, res) {
+  if (!adminKeyOk(String(req.headers['x-admin-key'] || ''))) {
+    sendJson(res, 401, { ok: false, error: 'ADMIN' });
+    return;
+  }
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    sendJson(res, 400, { ok: false, error: 'BODY' });
+    return;
+  }
+  const title = String(body?.title || '').trim().toUpperCase().slice(0, 60);
+  const text = String(body?.body || '').trim().toUpperCase().slice(0, 180);
+  if (!title || !text) {
+    sendJson(res, 400, { ok: false, error: 'MESSAGE' });
+    return;
+  }
+  const explicit = Array.isArray(body.tokens) && body.tokens.length > 0;
+  const tokens = targetTokens(body);
+  if (!tokens.length) {
+    sendJson(res, 400, { ok: false, error: 'TARGET', message: 'NAME tokens, emails, topic OR all: true' });
+    return;
+  }
+  const dryRun = body.dryRun !== false || (!pushLive() && !explicit);
+  const result = await sendPush(tokens, { title, body: text, data: body.data && typeof body.data === 'object' ? body.data : {} }, { dryRun });
+  console.log(`Admin push: ${result.dryRun ? 'dry run' : 'sent'} ${result.sent}/${result.count}`);
+  sendJson(res, 200, { ok: true, live: pushLive(), ...result });
+}
+
+async function runLevelUpPushes() {
+  try {
+    await refreshLedger();
+    await checkLevelUps({ accounts, xpFor, standing, save: saveAccounts });
+  } catch (error) {
+    console.error('Level-up push check', error instanceof Error ? error.message : error);
+  }
+}
+
 /**
  * One-shot launch reset. Set env CREW_RESET_ID to any new value (e.g. "launch-2026-11-23")
  * and redeploy: on boot the server clears /data/xp-ledger.json and every saved outfit and
@@ -1622,6 +1698,40 @@ const server = createServer((req, res) => {
     void handleCrewDelete(req, res);
     return;
   }
+  if (url.pathname === '/avatar/manifest.json') {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Max-Age': '86400' });
+      res.end();
+      return;
+    }
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    sendJson(res, 200, avatarManifest(publicOrigin(req), crewConfig().wardrobe));
+    return;
+  }
+  if (url.pathname.startsWith('/avatar/') && (req.method === 'GET' || req.method === 'HEAD')) {
+    if (handleAvatarAsset(req, res, url)) return;
+  }
+  if (url.pathname === '/api/push/register') {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' });
+      res.end();
+      return;
+    }
+    if (req.method === 'POST' || req.method === 'DELETE') {
+      void handlePushRegister(req, res);
+      return;
+    }
+    sendJson(res, 405, { ok: false, error: 'METHOD' });
+    return;
+  }
+  if (url.pathname === '/api/push/send') {
+    if (req.method === 'POST') {
+      void handlePushSend(req, res);
+      return;
+    }
+    sendJson(res, 405, { ok: false, error: 'METHOD' });
+    return;
+  }
   if (url.pathname === '/api/health') {
     void submissionStatus().then((status) => sendJson(res, 200, status));
     return;
@@ -1691,7 +1801,9 @@ launchReset();
 loadLedgerFile();
 initContent(dataDir);
 initCrew(dataDir);
+initPush(dataDir);
 fillPending();
+setInterval(() => void runLevelUpPushes(), 10 * 60 * 1000).unref?.();
 setInterval(() => fillPending(), 5 * 60 * 1000).unref?.();
 if (xpSheetId) setIssuedWriter(appendIssuedRows);
 if (!process.env.AUTH_SECRET) console.error('AUTH_SECRET is not set: sessions use the development secret');

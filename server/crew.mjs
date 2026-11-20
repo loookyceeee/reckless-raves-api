@@ -31,6 +31,25 @@ export function crewConfig() {
 
 const issuedPath = () => path.join(dataDir, 'crew-codes-issued.json');
 
+/**
+ * Crew codes are compared case-insensitively and always stored and shown in UPPERCASE,
+ * matching how Squarespace lists them (the starter batch was generated in lowercase).
+ */
+export const codeKey = (value) => String(value ?? '').trim().toUpperCase();
+
+/** Re-keys the issued table in UPPERCASE (older rows may be lowercase). Keeps the earliest row on a clash. */
+function normalizeIssued(table) {
+  const out = {};
+  let changed = false;
+  for (const [code, value] of Object.entries(table || {})) {
+    const key = codeKey(code);
+    if (!key) continue;
+    if (key !== code) changed = true;
+    if (!out[key] || String(value?.at) < String(out[key]?.at)) out[key] = value;
+  }
+  return { table: out, changed };
+}
+
 export function initCrew(dir) {
   dataDir = dir;
   config = loadConfig();
@@ -39,6 +58,9 @@ export function initCrew(dir) {
   } catch {
     issued = {};
   }
+  const normal = normalizeIssued(issued);
+  issued = normal.table;
+  if (normal.changed) saveIssued();
   importCodesFromEnv();
 }
 
@@ -63,8 +85,13 @@ function importCodesFromEnv() {
   let added = 0;
   for (const [crewId, pool] of Object.entries(incoming)) {
     const have = current[crewId]?.codes || [];
-    const seen = new Set(have);
-    const extra = (pool?.codes || []).filter((code) => typeof code === 'string' && !seen.has(code));
+    const seen = new Set(have.map(codeKey));
+    const extra = [];
+    for (const code of pool?.codes || []) {
+      if (typeof code !== 'string' || !codeKey(code) || seen.has(codeKey(code))) continue;
+      seen.add(codeKey(code));
+      extra.push(codeKey(code));
+    }
     added += extra.length;
     current[crewId] = { ...(current[crewId] || {}), ...pool, codes: [...have, ...extra] };
   }
@@ -155,11 +182,11 @@ function codeTable() {
 
 export function codePoolStatus() {
   const table = codeTable();
-  const used = new Set(Object.keys(issued));
+  const used = new Set(Object.keys(issued).map(codeKey));
   const pools = {};
   for (const [crewId, pool] of Object.entries(table)) {
     const codes = pool?.codes || [];
-    pools[crewId] = { total: codes.length, free: codes.filter((code) => !used.has(code)).length, loadedFree: freeLoaded(crewId).length };
+    pools[crewId] = { total: codes.length, free: codes.filter((code) => !used.has(codeKey(code))).length, loadedFree: freeLoaded(crewId).length };
   }
   return { live: codesLive(), loadedListed: loadedCodes().size, queuedFans: pendingCount(), pools };
 }
@@ -173,7 +200,7 @@ function issuedTo(email) {
   const hash = emailHash(email);
   return Object.entries(issued)
     .filter(([, value]) => value.hash === hash)
-    .map(([code, value]) => ({ code, ...value }))
+    .map(([code, value]) => ({ code: codeKey(code), ...value }))
     .sort((a, b) => String(a.at).localeCompare(String(b.at)));
 }
 
@@ -230,13 +257,13 @@ export function issuedQueueLength() {
  * and env CREW_CODES_LOADED (comma-separated). A code is only ever issued if it is listed. */
 let loadedSheet = new Set();
 export function setLoadedSheet(codes) {
-  loadedSheet = new Set((codes || []).map((code) => String(code).trim().toLowerCase()).filter(Boolean));
+  loadedSheet = new Set((codes || []).map(codeKey).filter(Boolean));
   fillPending();
 }
 function loadedCodes() {
   const out = new Set(loadedSheet);
   for (const code of (process.env.CREW_CODES_LOADED || '').split(/[\s,]+/)) {
-    const clean = code.trim().toLowerCase();
+    const clean = codeKey(code);
     if (clean) out.add(clean);
   }
   return out;
@@ -244,8 +271,8 @@ function loadedCodes() {
 function freeLoaded(crewId) {
   const loaded = loadedCodes();
   return (codeTable()[crewId]?.codes || [])
-    .map((value) => String(value).trim())
-    .filter((value) => value && !issued[value] && loaded.has(value.toLowerCase()));
+    .map(codeKey)
+    .filter((value) => value && !issued[value] && loaded.has(value));
 }
 
 /* Fans who reached a crew while its loaded pool was empty. { email: { crew, from, skipped, xp, at } } */
@@ -265,7 +292,8 @@ export function pendingCount() {
   return Object.keys(readPending()).length;
 }
 
-function issueCode(email, target, xp, from, skipped, code) {
+function issueCode(email, target, xp, from, skipped, rawCode) {
+  const code = codeKey(rawCode);
   const at = new Date().toISOString();
   issued[code] = { hash: emailHash(email), email, crew: target.id, at };
   saveIssued();

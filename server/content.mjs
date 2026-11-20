@@ -570,10 +570,39 @@ export function initContent(dir) {
   setInterval(() => { void refreshContent(); }, REFRESH_MS).unref?.();
 }
 
+/**
+ * Optional next clothing drop for the shop countdown: { at: ISO date, name?: string, url?: string }.
+ * Source: env NEXT_DROP (JSON, or a bare ISO date) or DATA_DIR/next-drop.json. Null when unset,
+ * invalid or already past, so the app shows nothing.
+ */
+export function nextDrop(now = Date.now()) {
+  let raw = (process.env.NEXT_DROP || '').trim();
+  if (!raw) {
+    try {
+      raw = readFileSync(path.join(dataDir, 'next-drop.json'), 'utf8').trim();
+    } catch {
+      raw = '';
+    }
+  }
+  if (!raw) return null;
+  let value;
+  try {
+    value = raw.startsWith('{') ? JSON.parse(raw) : { at: raw };
+  } catch {
+    return null;
+  }
+  const at = Date.parse(String(value?.at || ''));
+  if (!Number.isFinite(at) || at <= now) return null;
+  const drop = { at: new Date(at).toISOString() };
+  if (typeof value.name === 'string' && value.name.trim()) drop.name = value.name.trim().toUpperCase().slice(0, 40);
+  if (typeof value.url === 'string' && /^https:\/\/(www\.)?recklessraves\.co\.uk\//.test(value.url)) drop.url = value.url;
+  return drop;
+}
+
 export async function handleContent(req, res, sendJson) {
   if (!dataDir) throw new Error('content not initialised');
   if (!state.updatedAt) await refreshContent().catch(() => {});
-  const body = { ok: true, updatedAt: state.updatedAt, refreshMinutes: REFRESH_MS / 60000, records: state.records, events: state.events, products: state.products, status: state.status };
+  const body = { ok: true, updatedAt: state.updatedAt, refreshMinutes: REFRESH_MS / 60000, records: state.records, events: state.events, products: state.products, nextDrop: nextDrop(), status: state.status };
   res.setHeader('Cache-Control', 'public, max-age=300');
   sendJson(res, 200, body);
 }

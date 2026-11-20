@@ -1,0 +1,117 @@
+{
+ "skate-tee": {
+  "icon": "icon-tee",
+  "layer": "upper",
+  "file": "upper-tee"
+ },
+ "rckls-tee": {
+  "icon": "icon-rckls-tee",
+  "layer": "upper",
+  "file": "upper-rckls-tee"
+ },
+ "see-me-shorts": {
+  "icon": "icon-see-shorts",
+  "layer": "lower",
+  "file": "lower-see-shorts"
+ },
+ "deject-sleeve": {
+  "icon": "icon-deject",
+  "layer": "upper",
+  "file": "upper-deject"
+ },
+ "barrel-jeans": {
+  "icon": "icon-jeans",
+  "layer": "lower",
+  "file": "lower-jeans"
+ },
+ "moltin-tee": {
+  "icon": "icon-moltin",
+  "layer": "upper",
+  "file": "upper-moltin"
+ },
+ "stripped-tee": {
+  "icon": "icon-stripped",
+  "layer": "upper",
+  "file": "upper-stripped"
+ },
+ "seasoned-pants": {
+  "icon": "icon-seasoned-pants",
+  "layer": "lower",
+  "file": "lower-seasoned-pants"
+ },
+ "seasoned-hoodie": {
+  "icon": "icon-hoodie",
+  "layer": "upper",
+  "file": "upper-hoodie"
+ },
+ "isometric-tee": {
+  "icon": "icon-isometric",
+  "layer": "upper",
+  "file": "upper-isometric"
+ },
+ "artillery": {
+  "icon": "icon-artillery",
+  "layer": "lower",
+  "file": "lower-artillery"
+ },
+ "ultra-tee": {
+  "icon": "icon-ultra",
+  "layer": "upper",
+  "file": "upper-ultra"
+ },
+ "stan-bottoms": {
+  "icon": "icon-stan-bottoms",
+  "layer": "lower",
+  "file": "lower-stan-bottoms"
+ },
+ "rawdwg-zip": {
+  "icon": "icon-zip",
+  "layer": "upper",
+  "file": "upper-zip"
+ },
+ "pinner-tee": {
+  "icon": "icon-pinner",
+  "layer": "upper",
+  "file": "upper-pinner"
+ },
+ "rawdawg-shorts": {
+  "icon": "icon-raw-shorts",
+  "layer": "lower",
+  "file": "lower-raw-shorts"
+ },
+ "distress-shirt": {
+  "icon": "icon-distress",
+  "layer": "upper",
+  "file": "upper-distress"
+ },
+ "manager-shorts": {
+  "icon": "icon-manager-shorts",
+  "layer": "lower",
+  "file": "lower-manager-shorts"
+ },
+ "manager-zip": {
+  "icon": "icon-manager",
+  "layer": "upper",
+  "file": "upper-manager"
+ },
+ "see-me-crop": {
+  "icon": "icon-crop",
+  "layer": "upper",
+  "file": "upper-crop"
+ },
+ "stan-hoodie": {
+  "icon": "icon-stan-hoodie",
+  "layer": "upper",
+  "file": "upper-stan-hoodie"
+ },
+ "rcklstv-jersey": {
+  "icon": "icon-jersey",
+  "layer": "upper",
+  "file": "upper-jersey"
+ },
+ "mesh-jersey": {
+  "icon": "icon-mesh",
+  "layer": "upper",
+  "file": "upper-mesh"
+ }
+}
