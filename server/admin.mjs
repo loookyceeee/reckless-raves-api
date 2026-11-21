@@ -82,6 +82,7 @@ export function createAdmin(deps) {
     contentEvents,
     exportEventsSince,
     downloadsSummary,
+    social,
   } = deps;
 
   const auditPath = path.join(dataDir, 'admin-audit.jsonl');
@@ -377,6 +378,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         PIN_SETUP_LIVE: flagOn('PIN_SETUP_LIVE'),
         GAME_XP_LIVE: flagOn('GAME_XP_LIVE'),
         CREW_CODES_LIVE: flagOn('CREW_CODES_LIVE'),
+        SOCIAL_LIVE: flagOn('SOCIAL_LIVE'),
         CREW_RESET_ID: Boolean(String(process.env.CREW_RESET_ID || '').trim()),
       },
       downloads: { ios: downloadsSummary(), android: { connected: false, devices: deviceStats().android } },
@@ -423,6 +425,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       owned: owned.map((id) => wardrobe.find((piece) => piece.id === id)?.name || id),
       devices,
       game: { total: mine.length, countedToday: mine.filter((event) => event.counted && londonDay(Date.parse(event.at)) === today).length },
+      social: social ? social.adminLookup(email) : null,
     };
   }
 
@@ -446,6 +449,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         audit(req, 'events_csv');
         return send(res, 200, `${rows.join('\n')}\n`, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="game-events-${londonDay(Date.now())}.csv"` });
       }
+      if (route === '/social' && social) return json(res, 200, { ok: true, ...social.adminSummary(contentEvents()) });
       if (route === '/crew') {
         const email = normalizeEmail(url.searchParams.get('email'));
         if (!validEmail(email)) return json(res, 400, { ok: false, error: 'EMAIL', message: 'ENTER A VALID EMAIL' });
@@ -505,10 +509,20 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       console.log(`Admin page push (${kind}): ${result.dryRun ? 'dry run' : 'sent'} ${result.sent}/${result.count}`);
       return json(res, 200, { ok: true, ...row });
     }
+    if (route === '/social/code' && social) {
+      const result = social.adminNewCode(String(body.eventId || ''));
+      if (result.body.ok) audit(req, 'social_checkin_code', { eventId: result.body.eventId });
+      return json(res, result.status, result.body);
+    }
     if (route === '/crew/action') {
       const email = normalizeEmail(body.email);
       if (!validEmail(email)) return json(res, 400, { ok: false, error: 'EMAIL', message: 'ENTER A VALID EMAIL' });
       const action = String(body.action || '');
+      if (social && (action === 'remove-handle' || action === 'remove-photo' || action === 'remove-note')) {
+        const result = social.adminAction(email, action, body);
+        if (result.body.ok) audit(req, `social_${action.replace('-', '_')}`, { email, ...(result.audit || {}) });
+        return json(res, result.status, result.body);
+      }
       if (action === 'delete') {
         if (normalizeEmail(body.confirm) !== email) return json(res, 400, { ok: false, error: 'CONFIRM', message: 'TYPE THE EMAIL TO CONFIRM' });
         const result = await deleteCrewAccount(email);
@@ -544,7 +558,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
     const html = page(
       'RECKLESS ADMIN',
       `<header class="top"><span class="logo-sm">RECKLESS ADMIN</span><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${csrfFor(session)}"><button class="btn link" type="submit">[ LOG OUT ]</button></form></header>
-<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
+<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="social">SOCIAL</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
 <main id="app"></main><script src="/admin/app.js"></script>`,
       `<meta name="csrf-token" content="${csrfFor(session)}">`,
     );

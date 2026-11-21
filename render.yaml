@@ -38,6 +38,12 @@ services:
       # sync:false so a later dashboard flip is not reset by a blueprint sync. Unset or 0 = off.
       - key: GAME_XP_LIVE
         sync: false
+      # RECKLESS social (GOING, check-ins, rave diary, badges). Unset or 0 = off for every fan.
+      # SOCIAL_TEST_EMAILS (comma-separated) can use it while it is off; their XP rows are test:true.
+      - key: SOCIAL_LIVE
+        sync: false
+      - key: SOCIAL_TEST_EMAILS
+        sync: false
       # Admin page (/admin). Unset = admin off. Luke sets the value in the dashboard.
       - key: ADMIN_PASSWORD
         sync: false

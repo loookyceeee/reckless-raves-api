@@ -182,7 +182,7 @@
         render(j);
       });
     }
-    function action(name, label, danger, extra) {
+    function action(name, label, danger, extra, eventId) {
       var btn = h('button', { cls: 'btn' + (danger ? ' danger' : ''), type: 'button', text: label });
       var box = h('div', { cls: 'confirm', hidden: true });
       btn.addEventListener('click', function () {
@@ -201,12 +201,13 @@
         no.addEventListener('click', function () { box.hidden = true; });
         yes.addEventListener('click', function () {
           yes.disabled = true;
-          api('POST', '/crew/action', { email: lastEmail, action: name, confirm: typed ? typed.value : undefined }).then(function (j) {
+          api('POST', '/crew/action', { email: lastEmail, action: name, confirm: typed ? typed.value : undefined, eventId: eventId || undefined }).then(function (j) {
             yes.disabled = false;
             if (!j.ok) return msg(status, j.message || j.error, true);
             box.hidden = true;
             if (name === 'delete') { clear(out); return msg(status, 'ACCOUNT DELETED' + (j.ledgerKept ? ' (PURCHASE XP KEPT IN THE SHEET)' : ''), false); }
-            msg(status, name === 'unlock-pin' ? 'PIN UNLOCKED' : 'PIN REMOVED. THEY CAN SET A NEW ONE.', false);
+            var done = { 'unlock-pin': 'PIN UNLOCKED', 'reset-pin': 'PIN REMOVED. THEY CAN SET A NEW ONE.', 'remove-handle': 'HANDLE REMOVED AND BLOCKED', 'remove-photo': 'DIARY PHOTO REMOVED', 'remove-note': 'DIARY NOTE REMOVED' };
+            msg(status, done[name] || 'DONE', false);
             lookup();
           });
         });
@@ -235,12 +236,82 @@
         out.appendChild(action('reset-pin', '[ RESET PIN ]', false, 'REMOVE THE PIN FOR ' + j.email + '? THEY SET A NEW ONE NEXT TIME.'));
       }
       out.appendChild(action('delete', '[ DELETE ACCOUNT ]', true));
+      var so = j.social;
+      if (so) {
+        out.appendChild(h('h3', { text: 'SOCIAL' }));
+        var sdl = h('dl', { cls: 'kv' });
+        [
+          ['HANDLE', so.handle || 'NONE'], ['PROFILE', so.private ? 'PRIVATE' : 'VISIBLE TO CREW'],
+          ['GOING', so.going.length ? so.going.join(', ') : 'NONE'], ['RAVES', so.raves],
+          ['BADGES', so.badges.length ? so.badges.join(' · ') : 'NONE'],
+        ].forEach(function (r) { sdl.appendChild(h('dt', { text: r[0] })); sdl.appendChild(h('dd', { text: String(r[1]) })); });
+        out.appendChild(sdl);
+        if (so.handle) out.appendChild(action('remove-handle', '[ REMOVE HANDLE ]', true, 'REMOVE THE HANDLE ' + so.handle + '? IT IS BLOCKED SO NOBODY CAN TAKE IT AGAIN. THEY PICK A NEW ONE.'));
+        out.appendChild(h('h3', { text: 'RAVE DIARY' }));
+        if (!so.diary.length) out.appendChild(h('p', { cls: 'note', text: 'NO CHECK-INS YET' }));
+        so.diary.forEach(function (d) {
+          var box = h('div', { cls: 'diary' }, [
+            h('div', { cls: 'diary-head', text: (d.dateBadge ? d.dateBadge + ' · ' : '') + up(d.title) + (d.deleted ? ' (DELETED BY FAN)' : '') }),
+            h('div', { cls: 'diary-note', text: d.note ? '“' + d.note + '”' : 'NO NOTE' }),
+          ]);
+          if (d.photo) box.appendChild(h('img', { src: d.photo, alt: 'DIARY PHOTO', cls: 'diary-photo' }));
+          if (d.photo) box.appendChild(action('remove-photo', '[ REMOVE PHOTO ]', true, 'REMOVE THIS DIARY PHOTO? IT IS DELETED FROM THE SERVER.', d.eventId));
+          if (d.note) box.appendChild(action('remove-note', '[ REMOVE NOTE ]', true, 'REMOVE THIS DIARY NOTE?', d.eventId));
+          out.appendChild(box);
+        });
+      }
     }
     app.appendChild(h('h2', { text: 'CREW LOOKUP' }));
     app.appendChild(status);
     app.appendChild(form);
     app.appendChild(out);
     if (lastEmail) lookup();
+  }
+
+  /* ---------- SOCIAL ---------- */
+  function social() {
+    clear(app);
+    var status = h('p', { hidden: true });
+    var out = h('div');
+    app.appendChild(h('h2', { text: 'SOCIAL' }));
+    app.appendChild(status);
+    app.appendChild(out);
+    function load() {
+      clear(out);
+      api('GET', '/social').then(function (j) {
+        if (!j.ok) return msg(status, j.message || j.error, true);
+        var grid = h('div', { cls: 'grid' }, [
+          card(j.live ? 'ON' : 'OFF', 'SOCIAL_LIVE' + (j.live ? '' : ' · ' + j.testers + ' TESTERS')),
+          card(j.handles, 'CREW HANDLES'), card(j.checkins, 'CHECK-INS'), card(j.photos, 'DIARY PHOTOS · ' + j.photoMb + ' MB'),
+          card(j.private, 'PRIVATE PROFILES'), card(j.orders.sheetRows + j.orders.fileRows, 'SKIDDLE ORDERS LOADED'),
+        ]);
+        out.appendChild(grid);
+        out.appendChild(h('h3', { text: 'CHECK-IN CODES' }));
+        out.appendChild(h('p', { cls: 'note', text: 'SHOW THE CODE AT THE VENUE (DOOR, SCREENS). FANS TYPE IT IN THE APP ON THE EVENT PAGE. IT ONLY WORKS FROM 1 HOUR BEFORE DOORS TO 3 HOURS AFTER CLOSE. MAKING A NEW CODE REPLACES THE OLD ONE.' }));
+        if (!j.events.length) out.appendChild(h('p', { cls: 'note', text: 'NO UPCOMING EVENTS' }));
+        j.events.forEach(function (e) {
+          var btn = h('button', { cls: 'btn' + (e.code ? '' : ' primary'), type: 'button', text: e.code ? '[ NEW CODE ]' : '[ MAKE CODE ]' });
+          btn.addEventListener('click', function () {
+            if (e.code && !window.confirm('REPLACE ' + e.code + '? THE OLD CODE STOPS WORKING.')) return;
+            btn.disabled = true;
+            api('POST', '/social/code', { eventId: e.id }).then(function (r) {
+              btn.disabled = false;
+              if (!r.ok) return msg(status, r.message || r.error, true);
+              msg(status, 'CODE FOR ' + e.title + ': ' + r.code, false);
+              load();
+            });
+          });
+          out.appendChild(h('div', { cls: 'diary' }, [
+            h('div', { cls: 'diary-head', text: up(e.title) + (e.subtitle ? ' · ' + up(e.subtitle) : '') }),
+            h('div', { cls: 'code-big', text: e.code || '—' }),
+            h('div', { cls: 'diary-note', text: 'OPEN ' + when(e.opens) + ' → ' + when(e.closes) + (e.open ? ' · OPEN NOW' : '') }),
+            h('div', { cls: 'diary-note', text: e.going + ' GOING · ' + e.verified + ' VERIFIED · ' + e.checkins + ' CHECKED IN' }),
+            btn,
+          ]));
+        });
+      });
+    }
+    load();
   }
 
   /* ---------- STATS ---------- */
@@ -324,7 +395,7 @@
     });
   }
 
-  var views = { notify: notify, crew: crew, stats: stats, events: events, log: log };
+  var views = { notify: notify, crew: crew, social: social, stats: stats, events: events, log: log };
   var tabs = document.getElementById('tabs');
   tabs.addEventListener('click', function (e) {
     var tab = e.target.getAttribute && e.target.getAttribute('data-tab');
