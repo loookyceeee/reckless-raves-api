@@ -29,7 +29,15 @@ const out = {
   wardrobe: src.wardrobe.items.map((item) => ({ id: item.id, name: item.name, slot: item.slot, level: item.unlock_level })),
   starterFit: src.wardrobe.starter_fit,
   rewards: src.digital_rewards.map((reward) => ({ ...reward, kind: 'digital' })),
-  day1: { id: 'day1', name: 'DAY 1 CREW', from: '2026-11-23T00:00:00Z', to: '2026-11-30T00:00:00Z' },
+  day1: src.day1
+    ? {
+        id: src.day1.id || 'day1',
+        name: src.day1.name || 'DAY 1 CREW',
+        from: src.day1.from,
+        to: src.day1.to,
+        ...(src.day1.timezone ? { timezone: src.day1.timezone } : {}),
+      }
+    : undefined,
   issuedColumns: src.issued_tab_columns,
   launch: src.launch,
 };

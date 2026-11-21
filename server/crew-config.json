@@ -1,6 +1,6 @@
 {
  "version": 2,
- "source": "reckless-crew-config/v1 updated 2026-11-18T15:15:00Z",
+ "source": "reckless-crew-config/v1 updated 2026-11-21T13:15:00Z",
  "note": "Generated from the loyalty config. Do not edit by hand: run server/scripts/sync-crew-config.mjs.",
  "crews": [
   {
@@ -304,25 +304,26 @@
  "day1": {
   "id": "day1",
   "name": "DAY 1 CREW",
-  "from": "2026-11-23T00:00:00Z",
-  "to": "2026-11-30T00:00:00Z"
+  "from": "2026-11-21T00:00:00Z",
+  "to": "2026-11-28T00:00:00Z",
+  "timezone": "Europe/London"
  },
  "issuedColumns": [
   "issued_at",
   "email",
   "from_crew",
   "to_crew",
+  "skipped_crews",
   "code",
   "percent",
-  "channel",
-  "notes",
-  "skipped_crews",
   "trigger_event_id",
   "xp_total_at_issue",
   "status",
   "emailed_at",
   "redeemed_at",
-  "redeemed_order_id"
+  "redeemed_order_id",
+  "channel",
+  "notes"
  ],
  "launch": {
   "xp_start_instant_utc": "2026-11-21T00:00:00Z",

@@ -11,18 +11,43 @@ let dataDir = '';
 let config = loadConfig();
 let issued = {};
 
+function sourceUpdatedAt(cfg) {
+  const match = String(cfg?.source || '').match(/updated\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)/i);
+  return match ? Date.parse(match[1]) : 0;
+}
+
 function loadConfig() {
-  // DATA_DIR/crew-config.json overrides the copy in the repo, so the ladder can be
-  // swapped on the server without a code change.
-  const files = [dataDir && path.join(dataDir, 'crew-config.json'), path.join(here, 'crew-config.json')].filter(Boolean);
-  for (const file of files) {
+  // DATA_DIR/crew-config.json overrides the bundled copy, so the ladder can be
+  // swapped on the server without a code change. If the bundled file's source
+  // date is newer than the disk copy, write it to /data and use it.
+  const bundledPath = path.join(here, 'crew-config.json');
+  let bundled = null;
+  try {
+    bundled = JSON.parse(readFileSync(bundledPath, 'utf8'));
+  } catch (error) {
+    console.error('crew-config unreadable', bundledPath, error instanceof Error ? error.message : error);
+  }
+  const dataFile = dataDir ? path.join(dataDir, 'crew-config.json') : '';
+  let disk = null;
+  if (dataFile) {
     try {
-      if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
+      if (existsSync(dataFile)) disk = JSON.parse(readFileSync(dataFile, 'utf8'));
     } catch (error) {
-      console.error('crew-config unreadable', file, error instanceof Error ? error.message : error);
+      console.error('crew-config unreadable', dataFile, error instanceof Error ? error.message : error);
     }
   }
-  return { crews: [], ranks: [{ level: 1, xp: 0, crew: 0, step: 'I' }], wardrobe: [], rewards: [] };
+  const bundledTime = sourceUpdatedAt(bundled);
+  const diskTime = sourceUpdatedAt(disk);
+  if (disk && (diskTime >= bundledTime || !bundled)) return disk;
+  if (bundled && dataFile && bundledTime > diskTime) {
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(dataFile, `${JSON.stringify(bundled, null, 1)}\n`);
+    } catch (error) {
+      console.error('crew-config write failed', dataFile, error instanceof Error ? error.message : error);
+    }
+  }
+  return bundled || disk || { crews: [], ranks: [{ level: 1, xp: 0, crew: 0, step: 'I' }], wardrobe: [], rewards: [] };
 }
 
 export function crewConfig() {
