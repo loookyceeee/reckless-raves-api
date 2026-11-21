@@ -34,3 +34,7 @@ services:
       # Optional Behold.so JSON feed (https://feeds.behold.so/…). Leave unset until the website supplies a URL.
       - key: BEHOLD_FEED_URL
         sync: false
+      # RECKLESS WORLD events are stored either way. Real XP stays off until this is set to 1.
+      # sync:false so a later dashboard flip is not reset by a blueprint sync. Unset or 0 = off.
+      - key: GAME_XP_LIVE
+        sync: false

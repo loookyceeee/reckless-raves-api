@@ -38,6 +38,36 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
 - **Launch reset:** set env `CREW_RESET_ID` to a new value (e.g. `launch-2026-11-23`) and redeploy: clears `/data/xp-ledger.json`, saved outfits and popup markers once. Or `node server/scripts/launch-reset.mjs`.
 - **DAY 1 CREW** badge for anyone who signs in 23–29 Nov 2026.
 
+## RECKLESS WORLD game events
+
+The browser game (`https://reckless-world.onrender.com`) only POSTs events. It never sends XP amounts, and these routes never return XP amounts. Caps are enforced here. Counted events are stored for the loyalty bot to pull; they are not added to the XP Sheet ledger or to `accounts.json` XP.
+
+Auth is the existing session bearer (`Authorization: Bearer <token>` from `POST /api/auth/request`). Missing or invalid session: `401 { ok: false, error: "SESSION" }`. CORS preflight is `OPTIONS 204` with `Access-Control-Allow-Headers: Content-Type, Authorization, X-Admin-Key`.
+
+`server/game-xp.mjs` holds the approved caps. Source of truth: RECKLESS CREW LOYALTY `crew_config.json` → `xp_rates.game`.
+
+- `digital_rave_attended`: 20 XP, max 1 per Europe/London day and 2 per ISO week (of that London date) per email.
+- `poster_placed`: 10 XP, once per `posterId` per email ever, max 2 per Europe/London day. An over-cap poster does not consume the `posterId` (the same id can count on a later day).
+- Weekly game cap: 40 XP per email (a grant that lands on exactly 40 still counts; the next one does not).
+- Cap check order: `DUPLICATE`, then `DAILY_CAP`, then `WEEKLY_CAP` (the per-type ISO-week count, then the 40 XP week). Both weekly limits use reason `WEEKLY_CAP`.
+- Over-cap and duplicate events still return `200 { ok: true, recorded: true, counted: false, reason: "DAILY_CAP" | "WEEKLY_CAP" | "DUPLICATE" }`. Counted events return `200 { ok: true, recorded: true, counted: true }`.
+- Rate limit (in-memory, same `rateLimited()` helper): 30 event calls per email per 10 minutes and 120 per IP per 10 minutes on the player routes. `429 { ok: false, error: "RATE" }`.
+
+`raveId` and `posterId` must match `[A-Za-z0-9_.:-]{1,64}` (`400` `RAVE` or `POSTER`). A missing, non-string, or over-long `sessionId` is `400` `SESSION_ID`. `POST /api/crew/events` accepts only `type: "poster_placed"` (`400 { ok: false, error: "TYPE" }` otherwise). Bad JSON is `400 { ok: false, error: "BODY" }`.
+
+- `POST /api/crew/events/rave/start { raveId }` → `200 { ok: true, sessionId, minSeconds: 600, startedAt }`. `startedAt` is the server clock as ISO UTC. One open session per email (a new start replaces the old). Unfinished sessions expire after 6 hours. Stored in `/data/game-sessions.json` as `{ email, raveId, startedAt, sessionId }`.
+- `POST /api/crew/events/rave/finish { sessionId }` → if that session belongs to this email and server-clock elapsed is at least 600 seconds, records `digital_rave_attended` and consumes the session. Too soon: `409 { ok: false, error: "TOO_SOON", remainingSeconds }` and the session stays open. Unknown, someone else's, or expired: `404 { ok: false, error: "SESSION_NOT_FOUND" }`.
+- `POST /api/crew/events { type: "poster_placed", posterId }` → records `poster_placed`.
+- `GET /api/crew/events/me` → `{ ok: true, events, today, week }`. `events` is this email's last 50 log lines, newest first. `today` and `week` are counts of counted events (`digital_rave_attended` and `poster_placed`) for the current Europe/London day and ISO week. They are counts, not XP.
+- `GET /api/crew/events/export?since=<ISO>` with header `X-Admin-Key: <OAUTH_ADMIN_KEY>` → `application/x-ndjson` log lines whose `at` is at or after `since`. Omit `since` to export the whole log. Bad `since`: `400 { ok: false, error: "SINCE" }`. Wrong key: `403 { ok: false, error: "ADMIN" }`. Own rate bucket, 120 per IP per 10 minutes.
+
+Event log: append-only `/data/game-events.jsonl` (same directory as `accounts.json`). Each line is `{ id, type, email, raveId|posterId, at, counted, reason, test }` with `at` in ISO UTC. `reason` is `null` when the event counted.
+
+- Rave id: `wr:<raveId>:<sha256(normalised email) hex[:12]>:<YYYY-MM-DD>`. The London date is included so the same rave can count on a later London day when the caps allow. The same rave, email and London day share one id.
+- Poster id: `wp:<posterId>:<sha256(normalised email) hex[:12]>`. No date. Only a counted line consumes the id.
+
+**Flag:** `GAME_XP_LIVE` (default off: unset or `0`). While off, every line is `test: true`. While on, counted events with `at >= 2026-11-23T00:00:00Z` are `test: false`. Nothing here writes the XP ledger either way. Check locally with `node scripts/game-events-check.mjs`.
+
 ## Account PIN (opt-in, dormant until `PIN_SETUP_LIVE=1`)
 
 - Stored per email on the account row in `/data/accounts.json` as `pinHash` (`scrypt$<salt>$<hash>`, 16-byte random salt, N=16384). The PIN is never stored, logged or returned. Only accounts with a PIN are affected; everything else (including `appreview@recklessraves.co.uk`) is email-only as before.
@@ -56,4 +86,4 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
 
 ## Environment
 
-`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off) and `CREW_RESET_ID`. Never commit values.
+`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off), `GAME_XP_LIVE` (default off; RECKLESS WORLD events stay `test: true` and do not enter the XP ledger) and `CREW_RESET_ID`. Never commit values.
