@@ -229,6 +229,11 @@ function issuedTo(email) {
     .sort((a, b) => String(a.at).localeCompare(String(b.at)));
 }
 
+/** Read-only list of codes issued to this email (admin crew lookup). Never issues a code. */
+export function issuedCodesFor(email) {
+  return issuedTo(email).map((item) => ({ code: item.code, crew: item.crew, at: item.at }));
+}
+
 /* Issued-tab log for the XP Sheet. Rows queue on disk while Google is down. */
 const queuePath = () => path.join(dataDir, 'issued-queue.json');
 let sheetWriter = null;

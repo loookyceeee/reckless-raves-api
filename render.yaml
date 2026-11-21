@@ -38,3 +38,15 @@ services:
       # sync:false so a later dashboard flip is not reset by a blueprint sync. Unset or 0 = off.
       - key: GAME_XP_LIVE
         sync: false
+      # Admin page (/admin). Unset = admin off. Luke sets the value in the dashboard.
+      - key: ADMIN_PASSWORD
+        sync: false
+      # App Store downloads card (Sales and Trends API).
+      - key: ASC_KEY_P8
+        sync: false
+      - key: ASC_KEY_ID
+        sync: false
+      - key: ASC_ISSUER_ID
+        sync: false
+      - key: ASC_VENDOR_NUMBER
+        sync: false
