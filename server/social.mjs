@@ -1,6 +1,12 @@
 // RECKLESS social, phase 1: crew handles, GOING lists with a Skiddle VERIFIED tick, event
-// check-ins (a per-event code shown at the venue, redeemable in the app during event hours
-// only), the rave diary (one entry per check-in: note + one photo) and badges.
+// check-ins (a per-event QR shown at the venue, scanned in the app during event hours only),
+// the rave diary (one entry per check-in: note + one photo) and badges.
+//
+// Check-in QR: https://<link base>/checkin/<eventId>/<token>. The token is an HMAC with a random
+// per-event secret (rotated by [ NEW QR ] in the admin page). Two kinds:
+//   s<22>              printed / static poster token
+//   r<minute>.<16>     door-screen token, valid for the current and previous minute only
+// A per-event "door screen only" switch turns the printed token off.
 //
 // Everything counts from go-live (SOCIAL_FROM). Nothing is backfilled from past events.
 // SOCIAL_LIVE (default off) gates every fan endpoint. While it is off only emails listed in
@@ -11,7 +17,7 @@
 // RECKLESS CREW LOYALTY adds them to the XP Sheet. Nothing here writes to the XP ledger.
 //
 // Emails are never in a public payload. Fans are identified by their crew handle.
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -22,6 +28,7 @@ function sharp() {
   if (!sharpLib) sharpLib = require('sharp');
   return sharpLib;
 }
+const qrcode = require('qrcode-generator');
 
 /* ---------- rules (approved by Luke, 21 Nov 2026) ---------- */
 
@@ -38,6 +45,9 @@ export const socialRules = {
   checkinOpensBeforeMs: 60 * 60 * 1000,
   checkinClosesAfterMs: 3 * 60 * 60 * 1000,
   defaultEventLengthMs: 8 * 60 * 60 * 1000,
+  // Door-screen QR tokens: one per minute, accepted for the current and the previous minute.
+  qrSlotMs: 60 * 1000,
+  qrSlotsAccepted: 2,
   noteMax: 280,
   photoMaxBytes: 8 * 1024 * 1024,
   photoMaxEdge: 1440,
@@ -112,15 +122,62 @@ function londonDateKey(ms) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 const emailHash = (email) => createHash('sha256').update(String(email || '').trim().toLowerCase()).digest('hex').slice(0, 12);
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-function newCode() {
-  const bytes = randomBytes(6);
-  let out = '';
-  for (const byte of bytes) out += CODE_ALPHABET[byte % CODE_ALPHABET.length];
-  return out;
-}
-const cleanCode = (value) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+const sha256 = (text) => createHash('sha256').update(String(text)).digest('hex');
 const EVENT_ID_RE = /^[a-z0-9_-]{1,64}$/i;
+export const QR_TOKEN_RE = /^(?:s[A-Za-z0-9_-]{22}|r\d{1,12}\.[A-Za-z0-9_-]{16})$/;
+const CHECKIN_PATH_RE = /^\/checkin\/([a-z0-9_-]{1,64})\/([A-Za-z0-9_.-]{2,40})\/?$/i;
+
+/**
+ * Parses a scanned check-in link: https://<host>/checkin/<eventId>/<token> or
+ * recklessraves://checkin/<eventId>/<token>. Returns { eventId, token } or null.
+ */
+export function parseCheckinLink(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw || raw.length > 300) return null;
+  let pathPart;
+  const scheme = raw.match(/^recklessraves:\/\/(.*)$/i);
+  if (scheme) {
+    pathPart = `/${scheme[1].replace(/^\/+/, '')}`;
+  } else {
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    pathPart = url.pathname;
+  }
+  const match = pathPart.split(/[?#]/)[0].match(CHECKIN_PATH_RE);
+  if (!match || !QR_TOKEN_RE.test(match[2])) return null;
+  return { eventId: match[1].toLowerCase(), token: match[2] };
+}
+
+/** Square QR matrix for a text, as an SVG path (one 1x1 square per dark module) plus its size. */
+export function qrPath(text) {
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const size = qr.getModuleCount();
+  let d = '';
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      if (qr.isDark(row, col)) d += `M${col} ${row}h1v1h-1z`;
+    }
+  }
+  return { size, path: d };
+}
+
+/** Folds an event name for matching ("Gearbox X Reckless Raves: THE TEMPLE 008" -> words). */
+function nameWords(text) {
+  return new Set(
+    String(text || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .split(' ')
+      .filter((word) => word.length > 1 && !['THE', 'X', 'RECKLESS', 'RAVES', 'PRES', 'SPECIAL'].includes(word)),
+  );
+}
 const PHOTO_ID_RE = /^[A-Za-z0-9_-]{32}$/;
 
 function sniffImage(buffer) {
@@ -136,10 +193,11 @@ function sniffImage(buffer) {
  *   sendJson, now? }
  */
 export function createSocial(deps) {
-  const { dataDir, existingAccount, accountFor, saveAccounts, readSession, normalizeEmail, rateLimited, clientIp, xpFor, refreshLedger, standing, crewConfig, contentEventById, adminKeyOk, sendJson } = deps;
+  const { dataDir, existingAccount, accountFor, saveAccounts, readSession, normalizeEmail, rateLimited, clientIp, xpFor, refreshLedger, standing, crewConfig, contentEventById, contentEvents, adminKeyOk, sendJson } = deps;
+  const checkinBase = (req) => (typeof deps.checkinBase === 'function' ? deps.checkinBase(req) : 'https://reckless-raves-api-30is.onrender.com');
   const now = () => (typeof deps.now === 'function' ? deps.now() : Date.now());
   const statePath = path.join(dataDir, 'social.json');
-  const codesPath = path.join(dataDir, 'social-checkin-codes.json');
+  const qrPathFile = path.join(dataDir, 'social-checkin-qr.json');
   const eventsPath = path.join(dataDir, 'social-events.jsonl');
   const photoDir = path.join(dataDir, 'social-photos');
   const ordersPath = path.join(dataDir, 'skiddle-orders.json');
@@ -149,7 +207,7 @@ export function createSocial(deps) {
    *          checkins: { email: { eventId: { at, snapshot, note, noteAt, photo, photoAt, deleted } } },
    *          blockedHandles: { HANDLE: isoAt } } */
   let state = { profiles: {}, going: {}, checkins: {}, blockedHandles: {} };
-  let codes = {};
+  let qrs = {}; // eventId -> { secret, at, doorOnly }
   let lines = [];
   let countedIds = new Set();
   let ordersSheet = new Map(); // skiddleEventId -> Set(email)
@@ -163,9 +221,9 @@ export function createSocial(deps) {
       // first run
     }
     try {
-      codes = JSON.parse(readFileSync(codesPath, 'utf8')) || {};
+      qrs = JSON.parse(readFileSync(qrPathFile, 'utf8')) || {};
     } catch {
-      codes = {};
+      qrs = {};
     }
     lines = [];
     countedIds = new Set();
@@ -191,7 +249,7 @@ export function createSocial(deps) {
     renameSync(tmp, file);
   }
   const save = () => writeAtomic(statePath, JSON.stringify(state));
-  const saveCodes = () => writeAtomic(codesPath, JSON.stringify(codes));
+  const saveQrs = () => writeAtomic(qrPathFile, JSON.stringify(qrs));
   load();
 
   /* ---------- XP log ---------- */
@@ -227,49 +285,181 @@ export function createSocial(deps) {
   }
 
   /* ---------- Skiddle ticket orders (VERIFIED) ---------- */
+  // Two sources, both keyed by Skiddle event id -> sha256(lowercase email) -> tickets:
+  //  1. DATA_DIR/skiddle-orders.json, written by POST /api/social/skiddle-orders (admin key). The box
+  //     job scripts/skiddle-orders-push.mjs sends the Skiddle Promotion Centre order exports that
+  //     RECKLESS CREW LOYALTY already downloads. Only email hashes are stored, never emails.
+  //  2. The XP Sheet "Tickets" tab: rows of [email, skiddle_event_id, order_id, purchased_at].
+  const DEAD_STATUS = /cancel|refund|void|revoked/i;
+  const emailKey = (email) => sha256(normalizeEmail(email));
 
-  /** From the XP Sheet "Tickets" tab: rows of [email, skiddle_event_id, order_id, purchased_at]. */
   function setTicketOrders(rows) {
     const map = new Map();
     for (const row of rows || []) {
       const email = normalizeEmail(row?.[0]);
       const sid = String(row?.[1] || '').trim();
       if (!email.includes('@') || !/^\d{5,12}$/.test(sid)) continue;
-      if (!map.has(sid)) map.set(sid, new Set());
-      map.get(sid).add(email);
+      if (!map.has(sid)) map.set(sid, new Map());
+      const key = emailKey(email);
+      map.get(sid).set(key, (map.get(sid).get(key) || 0) + 1);
     }
     ordersSheet = map;
   }
-  /** DATA_DIR/skiddle-orders.json: { "orders": [{ "email", "skiddleEventId", "orderId" }] } (re-read once a minute). */
-  function fileOrders() {
-    if (now() - ordersFile.at < 60 * 1000) return ordersFile.map;
-    const map = new Map();
+  function readOrdersFile() {
     try {
       const raw = JSON.parse(readFileSync(ordersPath, 'utf8'));
-      for (const order of raw?.orders || []) {
-        const email = normalizeEmail(order?.email);
-        const sid = String(order?.skiddleEventId || '').trim();
-        if (!email.includes('@') || !/^\d{5,12}$/.test(sid)) continue;
-        if (!map.has(sid)) map.set(sid, new Set());
-        map.get(sid).add(email);
-      }
+      return raw && typeof raw === 'object' ? raw : {};
     } catch {
-      // no file
+      return {};
+    }
+  }
+  /** skiddle-orders.json -> Map(skiddleId -> Map(emailSha256 -> tickets)), re-read at most once a minute. */
+  function fileOrders(force = false) {
+    if (!force && now() - ordersFile.at < 60 * 1000) return ordersFile.map;
+    const map = new Map();
+    const raw = readOrdersFile();
+    for (const [sid, event] of Object.entries(raw.events || {})) {
+      if (!/^\d{5,12}$/.test(sid) || !event || typeof event.tickets !== 'object') continue;
+      map.set(sid, new Map(Object.entries(event.tickets).filter(([key]) => /^[0-9a-f]{64}$/.test(key)).map(([key, qty]) => [key, Number(qty) || 1])));
+    }
+    // Older hand-written format: { "orders": [{ "email", "skiddleEventId" }] }.
+    for (const order of raw.orders || []) {
+      const email = normalizeEmail(order?.email);
+      const sid = String(order?.skiddleEventId || '').trim();
+      if (!email.includes('@') || !/^\d{5,12}$/.test(sid)) continue;
+      if (!map.has(sid)) map.set(sid, new Map());
+      const key = emailKey(email);
+      map.get(sid).set(key, (map.get(sid).get(key) || 0) + 1);
     }
     ordersFile = { at: now(), map };
     return map;
   }
-  function hasTicket(email, skiddleId) {
-    if (!skiddleId) return false;
+  function ticketsFor(email, skiddleId) {
+    if (!skiddleId || !email) return 0;
     const sid = String(skiddleId);
-    return Boolean(ordersSheet.get(sid)?.has(email) || fileOrders().get(sid)?.has(email));
+    const key = emailKey(email);
+    return Math.max(ordersSheet.get(sid)?.get(key) || 0, fileOrders().get(sid)?.get(key) || 0);
   }
+  const hasTicket = (email, skiddleId) => ticketsFor(email, skiddleId) > 0;
   function orderSourceStatus() {
     let file = 0;
-    for (const set of fileOrders().values()) file += set.size;
+    for (const table of fileOrders().values()) file += table.size;
     let sheet = 0;
-    for (const set of ordersSheet.values()) sheet += set.size;
-    return { sheetRows: sheet, fileRows: file };
+    for (const table of ordersSheet.values()) sheet += table.size;
+    const raw = readOrdersFile();
+    return { sheetRows: sheet, fileRows: file, updatedAt: raw.updatedAt || null, source: raw.source || null, unmatched: Array.isArray(raw.unmatched) ? raw.unmatched.slice(0, 20) : [] };
+  }
+
+  /**
+   * Finds the app event for a Skiddle export event (the export has the event name and start time,
+   * not the Skiddle event id). Same start time (within 5 minutes) first, then the best name match
+   * when two events start together (a main event and its afterparty never do, but just in case).
+   */
+  function matchSkiddleEvent({ eventName, eventStart, skiddleEventId }, events) {
+    const sid = String(skiddleEventId || '').trim();
+    if (/^\d{5,12}$/.test(sid)) return events.find((event) => String(event.skiddleId) === sid) || { id: null, skiddleId: sid };
+    const start = Date.parse(eventStart || '');
+    if (!Number.isFinite(start)) return null;
+    const same = events.filter((event) => event.skiddleId && Math.abs(Date.parse(event.startDate) - start) <= 5 * 60 * 1000);
+    if (same.length <= 1) return same[0] || null;
+    const want = nameWords(eventName);
+    const scored = same
+      .map((event) => {
+        const have = nameWords(`${event.title || ''} ${event.subtitle || ''}`);
+        let score = 0;
+        for (const word of want) if (have.has(word)) score += 1;
+        return { event, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    return scored[0].score > 0 && scored[0].score > (scored[1]?.score ?? -1) ? scored[0].event : null;
+  }
+
+  /**
+   * POST /api/social/skiddle-orders body:
+   *   { source, orders: [{ orderId, emailSha256 | email, eventName, eventStart, qty, status?, skiddleEventId? }] }
+   * Every Skiddle event in the push replaces what was stored for it; other events are kept.
+   */
+  function ingestSkiddleOrders(body) {
+    const orders = Array.isArray(body?.orders) ? body.orders : null;
+    if (!orders || orders.length > 100000) return { status: 400, body: { ok: false, error: 'ORDERS' } };
+    const events = (typeof contentEvents === 'function' ? contentEvents() : []).map((event) => contentEventById(event.id)).filter(Boolean);
+    const groups = new Map();
+    let skipped = 0;
+    for (const order of orders) {
+      const orderId = String(order?.orderId || '').trim();
+      let key = String(order?.emailSha256 || '').trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(key)) key = order?.email && normalizeEmail(order.email).includes('@') ? emailKey(order.email) : '';
+      const qty = Math.max(1, Math.min(50, Math.floor(Number(order?.qty) || 1)));
+      if (!orderId || !key || DEAD_STATUS.test(String(order?.status || ''))) {
+        skipped += 1;
+        continue;
+      }
+      const groupKey = `${String(order.skiddleEventId || '')}|${String(order.eventName || '')}|${String(order.eventStart || '')}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, { eventName: String(order.eventName || '').slice(0, 160), eventStart: String(order.eventStart || ''), skiddleEventId: order.skiddleEventId, orders: new Map() });
+      groups.get(groupKey).orders.set(orderId, { key, qty });
+    }
+    const raw = readOrdersFile();
+    const stored = raw.events && typeof raw.events === 'object' ? raw.events : {};
+    const fresh = {};
+    const unmatched = [];
+    const matched = [];
+    for (const group of groups.values()) {
+      const event = matchSkiddleEvent(group, events);
+      if (!event?.skiddleId) {
+        unmatched.push({ name: group.eventName, start: group.eventStart, orders: group.orders.size });
+        continue;
+      }
+      const sid = String(event.skiddleId);
+      const entry = fresh[sid] || { appEventId: event.id || null, name: group.eventName, start: group.eventStart, orders: 0, tickets: {} };
+      for (const { key, qty } of group.orders.values()) {
+        entry.tickets[key] = (entry.tickets[key] || 0) + qty;
+        entry.orders += 1;
+      }
+      fresh[sid] = entry;
+    }
+    for (const [sid, entry] of Object.entries(fresh)) matched.push({ skiddleId: sid, appEventId: entry.appEventId, name: entry.name, orders: entry.orders, buyers: Object.keys(entry.tickets).length });
+    const out = { updatedAt: new Date(now()).toISOString(), source: String(body.source || 'push').slice(0, 80), events: { ...stored, ...fresh }, unmatched, ...(Array.isArray(raw.orders) ? { orders: raw.orders } : {}) };
+    writeAtomic(ordersPath, JSON.stringify(out));
+    fileOrders(true);
+    return { status: 200, body: { ok: true, matched, unmatched, skipped, updatedAt: out.updatedAt } };
+  }
+
+  /* ---------- check-in QR tokens ---------- */
+
+  const mac = (secret, text, length) => createHmac('sha256', Buffer.from(secret, 'base64url')).update(text).digest('base64url').slice(0, length);
+  const slotNow = () => Math.floor(now() / socialRules.qrSlotMs);
+  function staticToken(eventId) {
+    const entry = qrs[eventId];
+    return entry?.secret ? `s${mac(entry.secret, `static|${eventId}`, 22)}` : null;
+  }
+  function doorToken(eventId, slot = slotNow()) {
+    const entry = qrs[eventId];
+    return entry?.secret ? `r${slot}.${mac(entry.secret, `door|${eventId}|${slot}`, 16)}` : null;
+  }
+  const sameText = (a, b) => {
+    const left = Buffer.from(String(a));
+    const right = Buffer.from(String(b));
+    return left.length === right.length && timingSafeEqual(left, right);
+  };
+  /** { ok, kind } or { error: 'QR' | 'QR_EXPIRED' | 'QR_PRINTED_OFF' | 'CHECKIN_NOT_READY' } */
+  function checkToken(eventId, token) {
+    const entry = qrs[eventId];
+    if (!entry?.secret) return { error: 'CHECKIN_NOT_READY' };
+    const text = String(token || '');
+    if (!QR_TOKEN_RE.test(text)) return { error: 'QR' };
+    if (text.startsWith('s')) {
+      if (!sameText(text, staticToken(eventId))) return { error: 'QR' };
+      if (entry.doorOnly) return { error: 'QR_PRINTED_OFF' };
+      return { ok: true, kind: 'static' };
+    }
+    const slot = Number(text.slice(1, text.indexOf('.')));
+    if (!Number.isSafeInteger(slot) || !sameText(text, doorToken(eventId, slot))) return { error: 'QR' };
+    const current = slotNow();
+    if (slot > current || slot <= current - socialRules.qrSlotsAccepted) return { error: 'QR_EXPIRED' };
+    return { ok: true, kind: 'door' };
+  }
+  function linkFor(base, eventId, token) {
+    return `${String(base || '').replace(/\/$/, '')}/checkin/${eventId}/${token}`;
   }
 
   /* ---------- derived data ---------- */
@@ -418,7 +608,7 @@ export function createSocial(deps) {
       faces: viewer ? visible.slice(0, socialRules.facesMax).map(([email]) => ({ handle: profileOf(email).handle, ...lookOf(email) })) : [],
       going: Boolean(viewer && state.going[eventId]?.[viewer]),
       checkinOpen: event ? checkinOpen(event) : false,
-      checkinReady: Boolean(codes[eventId]?.code),
+      checkinReady: Boolean(qrs[eventId]?.secret),
       checkedIn: Boolean(viewer && state.checkins[viewer]?.[eventId] && !state.checkins[viewer][eventId].deleted),
     };
     return out;
@@ -613,6 +803,27 @@ export function createSocial(deps) {
       res.end(body);
       return;
     }
+    if (p === '/api/social/skiddle-orders') {
+      if (req.method !== 'POST') {
+        req.resume();
+        return reply(res, 405, { ok: false, error: 'METHOD' });
+      }
+      if (!adminKeyOk(String(req.headers['x-admin-key'] || ''))) {
+        req.resume();
+        return reply(res, 403, { ok: false, error: 'ADMIN' });
+      }
+      const { buffer, tooBig, error } = await readRaw(req, 8 * 1024 * 1024);
+      if (tooBig) return reply(res, 413, { ok: false, error: 'TOO_BIG' });
+      let body = null;
+      try {
+        body = error ? null : JSON.parse(buffer.toString('utf8'));
+      } catch {
+        body = null;
+      }
+      if (!body || typeof body !== 'object') return reply(res, 400, { ok: false, error: 'BODY' });
+      const result = ingestSkiddleOrders(body);
+      return reply(res, result.status, result.body);
+    }
     if (rateLimited(`social:ip:${clientIp(req)}`, socialRules.rate.ipMax, socialRules.rate.windowMs)) {
       req.resume();
       return reply(res, 429, { ok: false, error: 'RATE' });
@@ -734,11 +945,8 @@ export function createSocial(deps) {
         if (!body) return reply(res, 400, { ok: false, error: 'BODY' });
         if (!event) return reply(res, 404, { ok: false, error: 'EVENT' });
         if (!checkinOpen(event)) return reply(res, 409, { ok: false, error: 'CHECKIN_CLOSED' });
-        const want = codes[eventId]?.code;
-        if (!want) return reply(res, 409, { ok: false, error: 'CHECKIN_NOT_READY' });
-        const given = Buffer.from(cleanCode(body.code));
-        const expected = Buffer.from(want);
-        if (given.length !== expected.length || !timingSafeEqual(given, expected)) return reply(res, 400, { ok: false, error: 'CODE' });
+        const checked = checkToken(eventId, body.token);
+        if (checked.error) return reply(res, checked.error === 'CHECKIN_NOT_READY' ? 409 : 400, { ok: false, error: checked.error });
         if (!state.checkins[viewer]) state.checkins[viewer] = {};
         const existing = state.checkins[viewer][eventId];
         if (existing && !existing.deleted) return reply(res, 200, { ok: true, already: true, xp: 0, entry: diaryEntry(viewer, eventId, existing), newBadges: [] });
@@ -746,12 +954,12 @@ export function createSocial(deps) {
         if (existing) {
           existing.deleted = false;
         } else {
-          state.checkins[viewer][eventId] = { at: new Date(now()).toISOString(), source: 'code', snapshot: snapshotOf(event), note: '', photo: null };
+          state.checkins[viewer][eventId] = { at: new Date(now()).toISOString(), source: `qr-${checked.kind}`, snapshot: snapshotOf(event), note: '', photo: null };
         }
         save();
         const row = recordXp({ email: viewer, type: 'event_checkin', eventId });
         const fresh = badgesFor(viewer).filter((badge) => badge.kind === 'social' && badge.earned && !before.has(badge.id)).map((badge) => badgeDetail(badge.id));
-        return reply(res, 200, { ok: true, already: false, xp: row.counted ? row.xp : 0, entry: diaryEntry(viewer, eventId, state.checkins[viewer][eventId]), newBadges: fresh });
+        return reply(res, 200, { ok: true, already: false, xp: row.counted ? row.xp : 0, reason: row.reason || null, entry: diaryEntry(viewer, eventId, state.checkins[viewer][eventId]), newBadges: fresh });
       }
       req.resume();
       return reply(res, 405, { ok: false, error: 'METHOD' });
@@ -838,7 +1046,60 @@ export function createSocial(deps) {
   }
 
   /** Returns true when the request was a /api/social request (handled). */
+  /* ---------- public check-in link pages ---------- */
+
+  const APPLE_TEAM_ID = () => (process.env.APPLE_TEAM_ID || 'XY99374YG6').trim();
+  const APP_ID = 'com.recklessraves.app';
+  const APP_STORE_URL = 'https://apps.apple.com/app/id6834422153';
+  const PLAY_URL = `https://play.google.com/store/apps/details?id=${APP_ID}`;
+  const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+  function sendText(res, status, body, type, extra = {}) {
+    res.writeHead(status, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'X-Content-Type-Options': 'nosniff', ...extra });
+    res.end(body);
+  }
+  function publicPage(req, res, url) {
+    const p = url.pathname;
+    if (p === '/.well-known/apple-app-site-association' || p === '/apple-app-site-association') {
+      const body = JSON.stringify({ applinks: { apps: [], details: [{ appIDs: [`${APPLE_TEAM_ID()}.${APP_ID}`], appID: `${APPLE_TEAM_ID()}.${APP_ID}`, paths: ['/checkin/*'], components: [{ '/': '/checkin/*', comment: 'Event check-in QR' }] }] } });
+      sendText(res, 200, body, 'application/json', { 'Cache-Control': 'public, max-age=3600' });
+      return true;
+    }
+    if (p === '/.well-known/assetlinks.json') {
+      const prints = String(process.env.ANDROID_CERT_SHA256 || '').split(/[\s,]+/).map((v) => v.trim().toUpperCase()).filter((v) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(v));
+      if (!prints.length) {
+        sendText(res, 404, '[]', 'application/json');
+        return true;
+      }
+      sendText(res, 200, JSON.stringify([{ relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: APP_ID, sha256_cert_fingerprints: prints } }]), 'application/json', { 'Cache-Control': 'public, max-age=3600' });
+      return true;
+    }
+    const parsed = parseCheckinLink(`https://x${p}`);
+    if (!p.startsWith('/checkin/')) return false;
+    req.resume();
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      sendText(res, 405, 'Method not allowed', 'text/plain');
+      return true;
+    }
+    const event = parsed ? contentEventById(parsed.eventId) : null;
+    const deep = parsed ? `recklessraves://checkin/${parsed.eventId}/${parsed.token}` : 'recklessraves://';
+    const title = event ? `${escHtml(String(event.title || '').toUpperCase())}${event.subtitle ? `<br><span>${escHtml(String(event.subtitle).toUpperCase())}</span>` : ''}` : 'RECKLESS RAVES';
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><meta name="theme-color" content="#000000"><meta name="apple-itunes-app" content="app-id=6834422153, app-argument=${escHtml(deep)}"><title>CHECK IN · RECKLESS RAVES</title>
+<style>@font-face{font-family:Unbounded;font-weight:900;src:url(/admin/fonts/Unbounded_900Black.woff) format("woff")}@font-face{font-family:"DM Sans";font-weight:400;src:url(/admin/fonts/DMSans_400Regular.woff) format("woff")}@font-face{font-family:"DM Sans";font-weight:600;src:url(/admin/fonts/DMSans_600SemiBold.woff) format("woff")}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#000;color:#fff;font-family:"DM Sans",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;text-align:center;padding:48px 20px;text-transform:uppercase;letter-spacing:.08em}
+h1{font-family:Unbounded,"Arial Black",sans-serif;font-weight:900;font-size:24px;line-height:1.15;letter-spacing:-.01em;margin:0 0 8px}h1 span{font-size:17px}.date{font-size:44px;font-family:Unbounded,"Arial Black",sans-serif;font-weight:900;margin:8px 0 4px;letter-spacing:-.02em}.rule{width:40px;height:2px;background:#fff;margin:16px auto}
+p{color:#aaa;font-size:14px;line-height:1.5;margin:12px auto;max-width:340px}a.btn{display:block;max-width:360px;margin:12px auto;padding:16px;border:1px solid #fff;color:#fff;text-decoration:none;font-weight:600;font-size:15px}a.btn.on{background:#fff;color:#000}.small{font-size:11px;color:#777}</style></head>
+<body><div class="date">${escHtml(event?.dateBadge || '')}</div><div class="rule"></div><h1>${title}</h1>
+<p>${parsed ? 'CHECK IN IN THE RECKLESS APP FOR +50 XP' : 'THIS CHECK-IN LINK IS NOT VALID'}</p>
+<a class="btn on" href="${escHtml(deep)}">[ OPEN IN THE APP ]</a>
+<p>NO APP YET? GET RECKLESS RAVES, SIGN IN, THEN SCAN THE QR AGAIN.</p>
+<a class="btn" href="${APP_STORE_URL}">[ APP STORE ]</a><a class="btn" href="${PLAY_URL}">[ GOOGLE PLAY ]</a>
+<p class="small">CHECK-IN WORKS FROM 1 HOUR BEFORE DOORS TO 3 HOURS AFTER CLOSE.</p></body></html>`;
+    sendText(res, parsed ? 200 : 404, req.method === 'HEAD' ? '' : html, 'text/html; charset=utf-8', { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'" });
+    return true;
+  }
+
   function handle(req, res, url) {
+    if (url.pathname.startsWith('/checkin/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/apple-app-site-association') return publicPage(req, res, url);
     if (!url.pathname.startsWith('/api/social/')) return false;
     api(req, res, url).catch((error) => {
       console.error('social request failed', error instanceof Error ? error.message : error);
@@ -918,8 +1179,9 @@ export function createSocial(deps) {
         going: goingRows(event.id).length,
         verified: goingRows(event.id).filter(([email]) => hasTicket(email, full?.skiddleId)).length,
         checkins: Object.values(state.checkins).filter((table) => table[event.id]).length,
-        code: codes[event.id]?.code || null,
-        codeAt: codes[event.id]?.at || null,
+        qr: Boolean(qrs[event.id]?.secret),
+        qrAt: qrs[event.id]?.at || null,
+        doorOnly: Boolean(qrs[event.id]?.doorOnly),
         opens: window ? new Date(window.opens).toISOString() : null,
         closes: window ? new Date(window.closes).toISOString() : null,
         open: full ? checkinOpen(full) : false,
@@ -938,14 +1200,52 @@ export function createSocial(deps) {
       events: rows,
     };
   }
-  /** Creates (or replaces) the check-in code for an event. */
-  function adminNewCode(eventId) {
+  /** Makes (or replaces) the check-in QR secret for an event. Old printed and door QRs stop working. */
+  function adminNewQr(eventId) {
     if (!EVENT_ID_RE.test(String(eventId || '')) || !contentEventById(eventId)) return { status: 404, body: { ok: false, error: 'EVENT', message: 'UNKNOWN EVENT' } };
-    const code = newCode();
-    codes[eventId] = { code, at: new Date(now()).toISOString() };
-    saveCodes();
-    return { status: 200, body: { ok: true, eventId, code } };
+    qrs[eventId] = { secret: randomBytes(32).toString('base64url'), at: new Date(now()).toISOString(), doorOnly: Boolean(qrs[eventId]?.doorOnly) };
+    saveQrs();
+    return { status: 200, body: { ok: true, eventId, at: qrs[eventId].at } };
+  }
+  /** Door screen only: the printed QR stops working, only the per-minute door QR does. */
+  function adminQrMode(eventId, doorOnly) {
+    if (!qrs[eventId]?.secret) return { status: 404, body: { ok: false, error: 'NO_QR', message: 'MAKE THE QR FIRST' } };
+    qrs[eventId].doorOnly = Boolean(doorOnly);
+    saveQrs();
+    return { status: 200, body: { ok: true, eventId, doorOnly: qrs[eventId].doorOnly } };
+  }
+  /** The QR for the poster (kind 'print') or the door screen (kind 'door', changes every minute). */
+  function adminQr(eventId, kind, req) {
+    const event = EVENT_ID_RE.test(String(eventId || '')) ? contentEventById(eventId) : null;
+    if (!event) return { status: 404, body: { ok: false, error: 'EVENT', message: 'UNKNOWN EVENT' } };
+    if (!qrs[eventId]?.secret) return { status: 404, body: { ok: false, error: 'NO_QR', message: 'MAKE THE QR FIRST' } };
+    const door = kind === 'door';
+    const slot = slotNow();
+    const token = door ? doorToken(eventId, slot) : staticToken(eventId);
+    const url = linkFor(checkinBase(req), eventId, token);
+    const window = eventWindow(event);
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        eventId,
+        kind: door ? 'door' : 'print',
+        url,
+        ...qrPath(url),
+        title: String(event.title || '').toUpperCase(),
+        subtitle: String(event.subtitle || '').toUpperCase(),
+        dateBadge: event.dateBadge || '',
+        venue: String(event.venue || '').toUpperCase(),
+        opens: window ? new Date(window.opens).toISOString() : null,
+        closes: window ? new Date(window.closes).toISOString() : null,
+        open: checkinOpen(event),
+        doorOnly: Boolean(qrs[eventId].doorOnly),
+        printedWorks: !qrs[eventId].doorOnly,
+        changesAt: door ? new Date((slot + 1) * socialRules.qrSlotMs).toISOString() : null,
+        xp: socialRules.xp.event_checkin,
+      },
+    };
   }
 
-  return { handle, forget, adminLookup, adminAction, adminSummary, adminNewCode, setTicketOrders, exportSince, socialLive, _state: () => state };
+  return { handle, forget, adminLookup, adminAction, adminSummary, adminNewQr, adminQrMode, adminQr, setTicketOrders, ingestSkiddleOrders, exportSince, socialLive, _state: () => state };
 }

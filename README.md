@@ -79,10 +79,21 @@ Everything counts from go-live, **21 Nov 2026**: nothing is backfilled from earl
 - **Privacy:** `private: true` hides the profile card and drops the fan from GOING lists and faces (they still count).
 - **GOING:** `POST/DELETE /api/social/event/:id/going` (needs a handle). `GET /api/social/event/:id` = count, verified count, up to 6 faces
   (signed out: counts only). `GET /api/social/event/:id/going` = the list.
-- **VERIFIED:** a Skiddle order for that event with the same email. Sources: XP Sheet tab **Tickets** (`email | skiddle_event_id | order_id | purchased_at`)
-  and/or `DATA_DIR/skiddle-orders.json` (`{ "orders": [{ "email", "skiddleEventId", "orderId" }] }`). No source = nobody is verified.
-- **Check-in:** a 6-character code per event, made on the admin page (SOCIAL tab) and shown at the venue. `POST /api/social/event/:id/checkin { code }`
-  works from 1 hour before the Skiddle start to 3 hours after the end. It makes the diary entry (poster, date, venue and lineup are snapshotted).
+- **VERIFIED:** a Skiddle order for that event with the same email. Sources: XP Sheet tab **Tickets** (`email | skiddle_event_id | order_id | purchased_at`),
+  the Skiddle feed in `DATA_DIR/skiddle-orders.json`, and legacy `orders` in that file. No source = nobody is verified.
+- **Skiddle feed:** Skiddle has no promoter order API or webhook, so the source is the Promotion Centre order CSV export (one row per ticket).
+  `node scripts/skiddle-orders-push.mjs [--dry-run] [--csv-dir DIR] [--since-days 2] [--api URL]` reads the exports (default: the Loyalty
+  xp-ingest `data/skiddle*` folders), hashes emails (sha256 of the lowercase email, nothing else leaves the box), dedupes by order id, drops
+  cancelled/refunded rows, and `POST /api/social/skiddle-orders` with `X-Admin-Key` (from `OAUTH_ADMIN_KEY` or `~/.secrets/render/OAUTH_ADMIN_KEY`).
+  The server maps each Skiddle event to an app event by start time (±5 min; name words break ties; an explicit `skiddleEventId` wins),
+  replaces just the pushed events, and lists the rest as unmatched on the admin SOCIAL tab.
+- **Check-in (QR):** the admin SOCIAL tab makes a QR per event: A4 poster ([ DOWNLOAD PNG ], [ PRINT ]) and a door screen at `/admin/qr/<eventId>/door`
+  that changes every minute. The QR is `<CHECKIN_LINK_BASE or this host>/checkin/<eventId>/<token>`; the token is an HMAC of a per-event secret
+  (static for the poster, minute-slot for the door, current + previous slot accepted). [ NEW QR ] replaces the secret, so old posters stop working;
+  PRINTED QR: OFF accepts the door screen only. The app scans it (or opens the universal link) and calls `POST /api/social/event/:id/checkin { token }`,
+  which works from 1 hour before the Skiddle start to 3 hours after the end and makes the diary entry (poster, date, venue and lineup are snapshotted).
+  Without the app the link opens a page with App Store / Google Play buttons. `/.well-known/apple-app-site-association` covers `/checkin/*`;
+  `/.well-known/assetlinks.json` needs `ANDROID_CERT_SHA256`.
 - **XP** (same pattern as RECKLESS WORLD): 50 for a check-in (max 2 counted a London day), 25 once per entry when it has a note and a photo.
   Rows go to `DATA_DIR/social-events.jsonl` with `counted`, `reason`, `test`, `xp`; `GET /api/social/export?since=ISO` with `X-Admin-Key`.
   Nothing here writes the XP ledger: RECKLESS CREW LOYALTY adds counted `test:false` rows to the Sheet.
@@ -90,7 +101,7 @@ Everything counts from go-live, **21 Nov 2026**: nothing is backfilled from earl
   (raw JPEG/PNG/WebP body, max 8 MB; rotated, resized to 1440 px, re-encoded as JPEG with all metadata stripped; stored in `DATA_DIR/social-photos`, 300 MB cap).
 - **Badges:** FOUNDING RAVER (account made, or first signed in, in the crew-config `day1` window), GEARBOX 008 (check-in at `temple-008`),
   5 RAVES (5 check-ins from go-live), plus the crew code badges (highest crew reached + the next one). `GET|PUT /api/social/me`.
-- **Admin:** SOCIAL tab (codes, counts), and CREW lookup shows handle, privacy, GOING and diary with REMOVE HANDLE (the handle is then blocked) /
+- **Admin:** SOCIAL tab (check-in QRs, counts, Skiddle feed status), and CREW lookup shows handle, privacy, GOING and diary with REMOVE HANDLE (the handle is then blocked) /
   REMOVE PHOTO / REMOVE NOTE. Deleting an account removes its social data and photos.
 - Checks: `node scripts/social-check.mjs`.
 

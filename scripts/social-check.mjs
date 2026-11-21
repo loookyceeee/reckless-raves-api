@@ -1,19 +1,23 @@
 // Checks RECKLESS social phase 1 against local servers (child processes, temp DATA_DIR, no network).
 //   node scripts/social-check.mjs
 // Covers: SOCIAL_LIVE off = no effect (403 SOCIAL_OFF, nothing written, crew/content unchanged), testers while off
-// (XP rows test:true), handle rules, privacy, GOING + VERIFIED, faces, no email in public payloads, check-in codes
-// and event-hours window, XP once-only + daily cap, badges from go-live only (no backfill), diary CRUD, photo limits
-// + EXIF strip, admin moderation (remove handle/photo/note, codes), account delete, and the admin-key export.
+// (XP rows test:true), handle rules, privacy, GOING + VERIFIED, faces, no email in public payloads, check-in QR
+// tokens (event-hours window, printed vs per-minute door tokens, rotation, replay, door-only switch), deep-link
+// parsing + the /checkin web page + AASA, XP once per event + daily cap, badges from go-live only (no backfill),
+// diary CRUD, photo limits + EXIF strip, Skiddle order feed (push endpoint, event matching, CSV script),
+// admin moderation + QR pages, account delete, and the admin-key export.
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, createHmac } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { checkHandle } from '../server/social.mjs';
+import { checkHandle, parseCheckinLink, qrPath } from '../server/social.mjs';
+import { ordersFromRows, parseCsv } from './skiddle-orders-push.mjs';
 
 const require = createRequire(import.meta.url);
 const sharp = require('sharp');
@@ -47,6 +51,46 @@ function check(cond, label, extra) {
     check((got.handle || got.error) === want, `handle ${JSON.stringify(input)} -> ${want}`, got);
   }
 }
+
+/* ---------- 0b) check-in links + QR + Skiddle CSV (unit) ---------- */
+{
+  const tok = `s${'A'.repeat(22)}`;
+  const door = `r29412345.${'b'.repeat(16)}`;
+  const cases = [
+    [`https://reckless-raves-api-30is.onrender.com/checkin/temple-008/${tok}`, { eventId: 'temple-008', token: tok }],
+    [`https://recklessraves.co.uk/checkin/Temple-008/${tok}/?utm=x#y`, { eventId: 'temple-008', token: tok }],
+    [`recklessraves://checkin/temple-008/${door}`, { eventId: 'temple-008', token: door }],
+    [`recklessraves:///checkin/temple-008/${tok}`, { eventId: 'temple-008', token: tok }],
+    [`https://x.com/checkin/temple-008/${tok}/extra`, null],
+    [`https://x.com/checkin/temple-008/short`, null],
+    [`https://x.com/other/temple-008/${tok}`, null],
+    [`javascript:alert(1)//checkin/temple-008/${tok}`, null],
+    [`ftp://x.com/checkin/temple-008/${tok}`, null],
+    ['', null],
+    ['RCK8TX', null],
+  ];
+  for (const [input, want] of cases) {
+    const got = parseCheckinLink(input);
+    check(JSON.stringify(got) === JSON.stringify(want), `link ${input.slice(0, 60) || '(empty)'} -> ${want ? want.eventId : 'null'}`, got);
+  }
+  const q = qrPath(`https://reckless-raves-api-30is.onrender.com/checkin/temple-008/${tok}`);
+  check(q.size >= 21 && q.size <= 177 && (q.size - 17) % 4 === 0 && q.path.startsWith('M'), 'qr: valid QR matrix size + path', q.size);
+  const csv = '\uFEFF"Unique barcode","Skiddle order ID","Customer email","Event name","Event start date","Status","Customer name"\r\n'
+    + '"1","900","Fan.B@Example.com","Gearbox X Reckless Raves: THE TEMPLE 008","2026-11-28T15:00:00+00:00","Ready for Delivery/Collection","B, Fan"\r\n'
+    + '"2","900","fan.b@example.com","Gearbox X Reckless Raves: THE TEMPLE 008","2026-11-28T15:00:00+00:00","Ready for Delivery/Collection","B ""Kai"" Fan"\r\n'
+    + '"3","901","x@example.com","Gearbox X Reckless Raves: THE TEMPLE 008","2026-11-28T15:00:00+00:00","Cancelled","X"\r\n'
+    + '"4","902","","Gearbox X Reckless Raves: THE TEMPLE 008","2026-11-28T15:00:00+00:00","Ready","Y"\r\n';
+  const rows = parseCsv(csv);
+  check(rows.length === 4 && rows[0]['Customer name'] === 'B, Fan' && rows[1]['Customer name'] === 'B "Kai" Fan', 'skiddle csv: quoted commas + escaped quotes parsed', rows.map((r) => r['Customer name']));
+  const got = ordersFromRows(rows);
+  check(got.orders.length === 1 && got.orders[0].qty === 2 && got.dead === 1 && got.noEmail === 1, 'skiddle csv: rows grouped per order (qty 2), cancelled + no-email rows skipped', got);
+  check(/^[0-9a-f]{64}$/.test(got.orders[0].emailSha256) && !JSON.stringify(got.orders).includes('@'), 'skiddle csv: only the email hash leaves the box');
+}
+
+const qrMac = (secret, text, n) => createHmac('sha256', Buffer.from(secret, 'base64url')).update(text).digest('base64url').slice(0, n);
+const staticTok = (secret, eventId) => `s${qrMac(secret, `static|${eventId}`, 22)}`;
+const doorTok = (secret, eventId, slot) => `r${slot}.${qrMac(secret, `door|${eventId}|${slot}`, 16)}`;
+const SLOT_MS = 60 * 1000;
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -181,7 +225,7 @@ const hasEmail = (text) => /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test
     ['GET', '/api/social/me', {}],
     ['PUT', '/api/social/me', { json: { handle: 'NOVA' } }],
     ['POST', '/api/social/event/temple-008/going', {}],
-    ['POST', '/api/social/event/temple-008/checkin', { json: { code: 'ABCDEF' } }],
+    ['POST', '/api/social/event/temple-008/checkin', { json: { token: `s${'A'.repeat(22)}` } }],
     ['GET', '/api/social/diary', {}],
     ['GET', '/api/social/event/temple-008/going', {}],
   ]) {
@@ -205,14 +249,15 @@ const hasEmail = (text) => /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test
 {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'rr-social-test-'));
   seed(dataDir);
-  writeFileSync(path.join(dataDir, 'social-checkin-codes.json'), JSON.stringify({ 'temple-008': { code: 'TESTER', at: iso(now) } }));
+  const testerSecret = Buffer.alloc(32, 7).toString('base64url');
+  writeFileSync(path.join(dataDir, 'social-checkin-qr.json'), JSON.stringify({ 'temple-008': { secret: testerSecret, at: iso(now) } }));
   const s = await start(dataDir, { SOCIAL_TEST_EMAILS: `${FANS.e}, someone@else.com` });
   const call = client(s.base);
   check((await call('GET', '/api/social/status', { as: FANS.e })).body.live === true, 'tester: status live:true for the tester');
   check((await call('GET', '/api/social/status', { as: FANS.a })).body.live === false, 'tester: still off for everyone else');
   check((await call('GET', '/api/social/me', { as: FANS.a })).status === 403, 'tester: other fans still 403');
-  const ci = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.e, json: { code: 'tester' } });
-  check(ci.status === 200 && ci.body.xp === 50, 'tester: check-in works (code is case-insensitive)', ci.body);
+  const ci = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.e, json: { token: staticTok(testerSecret, 'temple-008') } });
+  check(ci.status === 200 && ci.body.xp === 50, 'tester: QR check-in works while the flag is off', ci.body);
   const rows = readFileSync(path.join(dataDir, 'social-events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   check(rows.length === 1 && rows[0].counted === true && rows[0].test === true, 'tester: XP row written as test:true while SOCIAL_LIVE is off', rows);
   s.child.kill();
@@ -286,6 +331,68 @@ const base = s.base;
   check((await call('GET', '/api/social/profile/KAI')).status === 401, 'profile: signed out refused');
 }
 
+// --- check-in link web page + app links ---
+{
+  const tok = `s${'A'.repeat(22)}`;
+  const page = await fetch(`${base}/checkin/temple-008/${tok}`);
+  const html = await page.text();
+  check(page.status === 200 && html.includes(`recklessraves://checkin/temple-008/${tok}`) && html.includes('GEARBOX X RECKLESS') && html.includes('apps.apple.com/app/id6834422153') && html.includes('play.google.com'), 'link page: opens the app, or offers App Store / Google Play');
+  check(!hasEmail(html) && page.headers.get('content-security-policy')?.includes("default-src 'none'"), 'link page: no email, locked-down CSP');
+  check((await fetch(`${base}/checkin/temple-008/nope`)).status === 404, 'link page: bad link 404');
+  const evil = await fetch(`${base}/checkin/%3Cscript%3E/${tok}`);
+  check(!(await evil.text()).includes('<script>'), 'link page: no HTML injection');
+  const aasa = await fetch(`${base}/.well-known/apple-app-site-association`);
+  const aasaJson = await aasa.json();
+  check(aasa.status === 200 && aasa.headers.get('content-type') === 'application/json' && aasaJson.applinks.details[0].appIDs[0] === 'XY99374YG6.com.recklessraves.app' && aasaJson.applinks.details[0].components[0]['/'] === '/checkin/*', 'universal links: AASA for /checkin/*');
+  check((await fetch(`${base}/.well-known/assetlinks.json`)).status === 404, 'android app links: assetlinks off until ANDROID_CERT_SHA256 is set');
+}
+
+// --- Skiddle order feed (VERIFIED) ---
+{
+  const startOf = (id) => JSON.parse(readFileSync(path.join(dataDir, 'content.json'), 'utf8')).events.find((e) => e.id === id).startDate;
+  const sha = (email) => createHash('sha256').update(email).digest('hex');
+  const push = (json, key = ADMIN_KEY) => call('POST', '/api/social/skiddle-orders', { json, headers: key ? { 'X-Admin-Key': key } : {} });
+  check((await push({ orders: [] }, null)).status === 403 && (await push({ orders: [] }, 'wrong')).status === 403, 'skiddle feed: admin key required');
+  check((await push({ nope: 1 })).status === 400, 'skiddle feed: bad body refused');
+  const t008 = startOf('temple-008');
+  const tie = new Date(Date.parse(startOf('afters-008')) + 2.5 * 60 * 1000).toISOString(); // between afters-008 and afters-009
+  const r = await push({
+    source: 'test',
+    orders: [
+      { orderId: 'S1', emailSha256: sha(FANS.b), qty: 2, eventName: 'Gearbox X Reckless Raves: THE TEMPLE 008', eventStart: new Date(Date.parse(t008)).toISOString().replace('Z', '+00:00') },
+      { orderId: 'S2', emailSha256: sha(FANS.a), qty: 1, eventName: 'Gearbox X Reckless Raves: THE TEMPLE 008', eventStart: t008 },
+      { orderId: 'S3', emailSha256: sha('gone@example.com'), qty: 1, eventName: 'Gearbox X Reckless Raves: THE TEMPLE 008', eventStart: t008, status: 'Cancelled' },
+      { orderId: 'S4', email: 'Fan.E@Example.com', qty: 1, eventName: 'THE TEMPLE 009', eventStart: 'x', skiddleEventId: '42853722' },
+      { orderId: 'S5', emailSha256: sha(FANS.b), qty: 1, eventName: 'Gearbox AFTERS (Halt)', eventStart: tie },
+      { orderId: 'S6', emailSha256: sha(FANS.b), qty: 1, eventName: 'Some Other Promoter Night', eventStart: '2026-01-01T20:00:00+00:00' },
+    ],
+  });
+  const matched = Object.fromEntries((r.body.matched || []).map((m) => [m.appEventId, m]));
+  check(r.status === 200 && matched['temple-008']?.orders === 2 && matched['temple-008'].skiddleId === '42803971', 'skiddle feed: export event matched to temple-008 by start time', r.body);
+  check(matched['temple-009']?.buyers === 1 && matched['afters-008']?.orders === 1 && !matched['afters-009'], 'skiddle feed: explicit Skiddle id + name tie-break (two events starting together)', Object.keys(matched));
+  check(r.body.unmatched.length === 1 && r.body.unmatched[0].name === 'Some Other Promoter Night' && r.body.skipped === 1, 'skiddle feed: unknown event reported, cancelled order skipped', r.body.unmatched);
+  const stored = readFileSync(path.join(dataDir, 'skiddle-orders.json'), 'utf8');
+  check(!hasEmail(JSON.stringify(JSON.parse(stored).events)) && !hasEmail(JSON.stringify(JSON.parse(stored).unmatched)), 'skiddle feed: no emails stored from the feed, only hashes');
+  const sum = await call('GET', '/api/social/event/temple-008', { as: FANS.b });
+  check(sum.body.verified === 3, 'skiddle feed: KAI now VERIFIED for temple-008 (3 of 3)', sum.body.verified);
+  const list = await call('GET', '/api/social/event/temple-008/going', { as: FANS.a });
+  check(list.body.people.find((p) => p.handle === 'KAI')?.verified === true, 'skiddle feed: VERIFIED tick on the going list');
+  // A later push for temple-008 without B replaces that event's orders (refund / moved ticket).
+  await push({ source: 'test', orders: [{ orderId: 'S2', emailSha256: sha(FANS.a), qty: 1, eventName: 'Gearbox X Reckless Raves: THE TEMPLE 008', eventStart: t008 }] });
+  check((await call('GET', '/api/social/event/temple-008', { as: FANS.b })).body.verified === 2, 'skiddle feed: a newer export replaces that event (old orders kept via legacy file rows)');
+
+  // End to end: the box script reading a CSV export folder.
+  const csvDir = mkdtempSync(path.join(tmpdir(), 'rr-skiddle-csv-'));
+  writeFileSync(path.join(csvDir, 'export.csv'), `"Unique barcode","Skiddle order ID","Customer email","Event name","Event start date","Status"
+"1","S9","${FANS.b}","Gearbox X Reckless Raves: THE TEMPLE 008","${t008}","Ready for Delivery/Collection"
+"2","S9","${FANS.b}","Gearbox X Reckless Raves: THE TEMPLE 008","${t008}","Ready for Delivery/Collection"
+`);
+  const out = JSON.parse(execFileSync(process.execPath, [path.join(root, 'scripts', 'skiddle-orders-push.mjs'), '--api', base, '--csv-dir', csvDir], { env: { PATH: process.env.PATH, HOME: '/nonexistent', OAUTH_ADMIN_KEY: ADMIN_KEY }, encoding: 'utf8' }));
+  check(out.status === 'ok' && out.result.matched[0].appEventId === 'temple-008' && out.result.matched[0].orders === 1, 'skiddle script: CSV export pushed and matched', out.result);
+  check(!JSON.stringify(out).includes(ADMIN_KEY) && !hasEmail(JSON.stringify(out)), 'skiddle script: output has no key and no emails');
+  check((await call('GET', '/api/social/event/temple-008', { as: FANS.b })).body.verified === 3, 'skiddle script: VERIFIED updated from the CSV');
+}
+
 // --- admin session ---
 async function adminLogin() {
   const page = await fetch(`${base}/admin/login`, { headers: { 'X-Forwarded-For': '10.9.9.9' } });
@@ -301,6 +408,7 @@ async function adminLogin() {
   const adminHtml = await (await fetch(`${base}/admin`, { headers: { Cookie: cookie } })).text();
   const csrf = /name="csrf-token" content="([^"]+)"/.exec(adminHtml)?.[1];
   return {
+    cookie,
     html: adminHtml,
     get: async (p) => (await fetch(`${base}/admin/api${p}`, { headers: { Cookie: cookie } })).json(),
     post: async (p, json) => {
@@ -312,39 +420,77 @@ async function adminLogin() {
 const admin = await adminLogin();
 check(admin.html.includes('data-tab="social"'), 'admin: SOCIAL tab present');
 
-// --- check-in ---
+// --- check-in (QR) ---
 {
-  const notReady = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { code: 'ABCDEF' } });
-  check(notReady.status === 409 && notReady.body.error === 'CHECKIN_NOT_READY', 'check-in: no code made yet -> not ready');
-  const made = await admin.post('/social/code', { eventId: 'temple-008' });
-  check(made.status === 200 && /^[A-HJ-NP-Z2-9]{6}$/.test(made.body.code), 'admin: makes a 6-char check-in code', made.body);
-  const code = made.body.code;
-  const wrong = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { code: code === 'AAAAAA' ? 'BBBBBB' : 'AAAAAA' } });
-  check(wrong.status === 400 && wrong.body.error === 'CODE', 'check-in: wrong code refused');
-  await admin.post('/social/code', { eventId: 'temple-009' });
-  const future = await call('POST', '/api/social/event/temple-009/checkin', { as: FANS.a, json: { code } });
-  check(future.status === 409 && future.body.error === 'CHECKIN_CLOSED', 'check-in: closed before event hours');
-  const past = await call('POST', '/api/social/event/past-night/checkin', { as: FANS.a, json: { code } });
+  const T = (eventId, token, as = FANS.a) => call('POST', `/api/social/event/${eventId}/checkin`, { as, json: { token } });
+  const fake = `s${'A'.repeat(22)}`;
+  const notReady = await T('temple-008', fake, FANS.e);
+  check(notReady.status === 409 && notReady.body.error === 'CHECKIN_NOT_READY', 'check-in: no QR made yet -> not ready');
+  const made = await admin.post('/social/qr', { eventId: 'temple-008' });
+  check(made.status === 200 && made.body.ok, 'admin: makes the check-in QR', made.body);
+  check((await admin.post('/social/qr', { eventId: 'nope' })).status === 404, 'admin: QR for an unknown event refused');
+  const qr = await admin.get('/social/qr?eventId=temple-008');
+  const link = parseCheckinLink(qr.url);
+  check(qr.ok && qr.url.startsWith(`${base}/checkin/temple-008/s`) && link?.eventId === 'temple-008' && qr.size >= 21 && qr.path.length > 100 && qr.title === 'GEARBOX X RECKLESS' && qr.xp === 50, 'admin: printed QR = /checkin/<event>/<token> link + matrix', qr.url);
+  const token = link.token;
+  const secret = JSON.parse(readFileSync(path.join(dataDir, 'social-checkin-qr.json'), 'utf8'))['temple-008'].secret;
+  check(token === staticTok(secret, 'temple-008') && /^[A-Za-z0-9_-]{43}$/.test(secret), 'qr: token is an HMAC of a 256-bit per-event secret');
+  const wrong = await T('temple-008', fake, FANS.e);
+  check(wrong.status === 400 && wrong.body.error === 'QR', 'check-in: forged token refused');
+  check((await T('temple-008', 'hello', FANS.e)).body.error === 'QR' && (await T('temple-008', undefined, FANS.e)).body.error === 'QR', 'check-in: malformed / missing token refused');
+  await admin.post('/social/qr', { eventId: 'temple-009' });
+  await admin.post('/social/qr', { eventId: 'afters-008' });
+  await admin.post('/social/qr', { eventId: 'afters-009' });
+  const qrs = () => JSON.parse(readFileSync(path.join(dataDir, 'social-checkin-qr.json'), 'utf8'));
+  check((await T('afters-008', token, FANS.e)).body.error === 'QR', 'check-in: a token only works for its own event');
+  const future = await T('temple-009', staticTok(qrs()['temple-009'].secret, 'temple-009'), FANS.e);
+  check(future.status === 409 && future.body.error === 'CHECKIN_CLOSED', 'check-in: closed before event hours (valid QR)');
+  const past = await T('past-night', token, FANS.e);
   check(past.status === 404 || past.body.error === 'CHECKIN_CLOSED', 'check-in: closed after the night', past.body);
-  const ok = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { code: ` ${code.toLowerCase()} ` } });
-  check(ok.status === 200 && ok.body.xp === 50 && ok.body.already === false, 'check-in: right code -> +50 XP', ok.body);
+
+  // Door screen tokens: current + previous minute only.
+  const slot = Math.floor(Date.now() / SLOT_MS);
+  const doorQr = await admin.get('/social/qr?eventId=temple-008&kind=door');
+  const doorLink = parseCheckinLink(doorQr.url);
+  check(doorQr.kind === 'door' && /^r\d+\.[A-Za-z0-9_-]{16}$/.test(doorLink?.token || '') && Date.parse(doorQr.changesAt) > Date.now(), 'admin: door QR is a per-minute token', doorQr.url);
+  check((await T('temple-008', doorTok(secret, 'temple-008', slot - 2), FANS.b)).body.error === 'QR_EXPIRED', 'door QR: 2-minute-old token expired (screenshot replay)');
+  check((await T('temple-008', doorTok(secret, 'temple-008', slot + 2), FANS.b)).body.error === 'QR_EXPIRED', 'door QR: future token refused');
+  check((await T('temple-008', `r${slot}.${'A'.repeat(16)}`, FANS.b)).body.error === 'QR', 'door QR: forged signature refused');
+  check((await T('temple-008', doorTok(secret, 'afters-008', slot), FANS.b)).body.error === 'QR', 'door QR: token for another event refused');
+
+  const ok = await T('temple-008', token);
+  check(ok.status === 200 && ok.body.xp === 50 && ok.body.already === false, 'check-in: scan -> CHECKED IN +50 XP', ok.body);
   check(ok.body.entry.title === 'GEARBOX X RECKLESS' && ok.body.entry.lineup.length === 3 && ok.body.entry.image, 'check-in: diary entry made with poster, date and lineup');
   const fresh = ok.body.newBadges.map((b) => b.id).sort();
   check(JSON.stringify(fresh) === JSON.stringify(['gearbox-008']), 'check-in: GEARBOX 008 unlocked by this check-in', fresh);
-  const again = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { code } });
-  check(again.status === 200 && again.body.already === true && again.body.xp === 0, 'check-in: second time = already, 0 XP');
+  const again = await T('temple-008', token);
+  check(again.status === 200 && again.body.already === true && again.body.xp === 0, 'check-in: scanning again = already, 0 XP (once per event)');
+  const againDoor = await T('temple-008', doorTok(secret, 'temple-008', slot - 1));
+  check(againDoor.body.already === true && againDoor.body.xp === 0, 'check-in: door QR (previous minute) accepted, still 0 XP the second time');
   const summary = await call('GET', '/api/social/event/temple-008', { as: FANS.a });
-  check(summary.body.checkedIn === true && summary.body.checkinOpen === true, 'event summary: checkedIn + checkinOpen');
+  check(summary.body.checkedIn === true && summary.body.checkinOpen === true && summary.body.checkinReady === true, 'event summary: checkedIn + checkinOpen + checkinReady');
+
+  // Rotation: [ NEW QR ] kills the old printed and door tokens.
+  await admin.post('/social/qr', { eventId: 'temple-008' });
+  const secret2 = qrs()['temple-008'].secret;
+  check(secret2 !== secret, 'rotation: new secret on [ NEW QR ]');
+  check((await T('temple-008', token, FANS.c)).body.error === 'QR', 'rotation: old printed QR stops working');
+  check((await T('temple-008', doorTok(secret, 'temple-008', slot), FANS.c)).body.error === 'QR', 'rotation: old door QR stops working');
+  // Door screen only: the printed QR is switched off, the door QR still works.
+  check((await admin.post('/social/qr-mode', { eventId: 'temple-008', doorOnly: true })).body.doorOnly === true, 'admin: DOOR SCREEN ONLY on');
+  check((await T('temple-008', staticTok(secret2, 'temple-008'), FANS.c)).body.error === 'QR_PRINTED_OFF', 'door only: printed QR refused');
+  const qrAfter = await admin.get('/social/qr?eventId=temple-008');
+  check(qrAfter.doorOnly === true && qrAfter.printedWorks === false, 'admin: poster data says the printed QR is off');
 
   // Daily cap: 2 counted check-ins a London day.
-  const c2 = await admin.post('/social/code', { eventId: 'afters-008' });
-  const c3 = await admin.post('/social/code', { eventId: 'afters-009' });
-  const second = await call('POST', '/api/social/event/afters-008/checkin', { as: FANS.a, json: { code: c2.body.code } });
-  const third = await call('POST', '/api/social/event/afters-009/checkin', { as: FANS.a, json: { code: c3.body.code } });
-  check(second.body.xp === 50 && third.status === 200 && third.body.xp === 0, 'check-in: daily cap (3rd night today still logs the diary, 0 XP)', [second.body.xp, third.body.xp]);
+  const second = await T('afters-008', staticTok(qrs()['afters-008'].secret, 'afters-008'));
+  const third = await T('afters-009', staticTok(qrs()['afters-009'].secret, 'afters-009'));
+  check(second.body.xp === 50 && third.status === 200 && third.body.xp === 0 && third.body.reason === 'DAILY_CAP', 'check-in: daily cap (3rd night today still logs the diary, 0 XP)', [second.body.xp, third.body.xp, third.body.reason]);
 
   // C: 4 since go-live + this one = 5 RAVES. The pre-go-live check-in never counts.
-  const cc = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.c, json: { code } });
+  const cc = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.c, json: { token: doorTok(qrs()['temple-008'].secret, 'temple-008', Math.floor(Date.now() / SLOT_MS)) } });
+  check(cc.body.xp === 50, 'door only: current door QR checks in (+50 XP)', cc.body);
+  await admin.post('/social/qr-mode', { eventId: 'temple-008', doorOnly: false });
   check(cc.body.newBadges.map((b) => b.id).includes('5-raves'), 'badges: 5 RAVES at the 5th check-in since go-live', cc.body.newBadges);
   const cMe = await call('GET', '/api/social/me', { as: FANS.c });
   check(cMe.body.raves === 5, 'badges: check-in from before go-live not counted (5, not 6)', cMe.body.raves);
@@ -416,8 +562,8 @@ async function jpegWithExif(width, height) {
   check(delPhoto.body.entry.photo === null && readdirSync(path.join(dataDir, 'social-photos')).length === 0, 'photo: delete removes the file');
   const delEntry = await call('DELETE', '/api/social/diary/temple-008', { as: FANS.a });
   check(delEntry.body.deleted === true && (await call('GET', '/api/social/diary', { as: FANS.a })).body.entries.length === 2, 'diary: entry deleted');
-  const codes = JSON.parse(readFileSync(path.join(dataDir, 'social-checkin-codes.json'), 'utf8'));
-  const back = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { code: codes['temple-008'].code } });
+  const qrFile = JSON.parse(readFileSync(path.join(dataDir, 'social-checkin-qr.json'), 'utf8'));
+  const back = await call('POST', '/api/social/event/temple-008/checkin', { as: FANS.a, json: { token: staticTok(qrFile['temple-008'].secret, 'temple-008') } });
   check(back.status === 200 && back.body.xp === 0 && back.body.entry.note === '', 'diary: checking in again restores an empty entry, no new XP', back.body);
 
   const exp = await call('GET', '/api/social/export', { headers: { 'X-Admin-Key': ADMIN_KEY } });
@@ -444,11 +590,21 @@ async function jpegWithExif(width, height) {
   const list = await call('GET', '/api/social/event/temple-008/going', { as: FANS.a });
   check(list.body.count === 3 && !list.body.people.some((p) => p.handle === 'KAI'), 'admin: fan without a handle drops off the list (still counted)');
   const summary = await admin.get('/social');
-  check(summary.live === true && summary.events.find((e) => e.id === 'temple-008')?.code && summary.events.find((e) => e.id === 'temple-008').going === 3, 'admin: SOCIAL summary with codes + counts');
+  check(summary.live === true && summary.events.find((e) => e.id === 'temple-008')?.qr === true && summary.events.find((e) => e.id === 'temple-008').going === 3, 'admin: SOCIAL summary with QR state + counts');
   const stats = await admin.get('/stats');
   check(stats.flags.SOCIAL_LIVE === true, 'admin: STATS flags show SOCIAL_LIVE');
   const audit = await admin.get('/audit');
-  check(audit.audit.some((r) => r.action === 'social_remove_handle') && audit.audit.some((r) => r.action === 'social_checkin_code'), 'admin: moderation is in the audit log');
+  check(audit.audit.some((r) => r.action === 'social_remove_handle') && audit.audit.some((r) => r.action === 'social_checkin_qr') && audit.audit.some((r) => r.action === 'social_checkin_qr_mode'), 'admin: moderation + QR changes are in the audit log');
+  const poster = await fetch(`${base}/admin/qr/temple-008`, { headers: { Cookie: admin.cookie } });
+  const posterHtml = await poster.text();
+  check(poster.status === 200 && posterHtml.includes('data-kind="print"') && posterHtml.includes('/admin/qr.js'), 'admin: poster page (PNG + print)');
+  const doorPage = await fetch(`${base}/admin/qr/temple-008/door`, { headers: { Cookie: admin.cookie } });
+  check(doorPage.status === 200 && (await doorPage.text()).includes('data-kind="door"'), 'admin: door screen page');
+  check((await fetch(`${base}/admin/qr/temple-008/door`, { redirect: 'manual' })).status === 303, 'admin: door screen needs the admin session');
+  check((await fetch(`${base}/admin/api/social/qr?eventId=temple-008`)).status === 401, 'admin: QR data needs the admin session');
+  const js = await fetch(`${base}/admin/qr.js`);
+  const font = await fetch(`${base}/admin/fonts/Unbounded_900Black.woff`);
+  check(js.status === 200 && font.status === 200 && font.headers.get('content-type') === 'font/woff', 'admin: qr.js + poster font served');
 }
 
 // --- account delete clears social ---

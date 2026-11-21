@@ -1800,8 +1800,11 @@ const social = createSocial({
   standing,
   crewConfig,
   contentEventById,
+  contentEvents,
   adminKeyOk,
   sendJson,
+  // Check-in QR links: https://<CHECKIN_LINK_BASE or this API's public origin>/checkin/<eventId>/<token>.
+  checkinBase: (req) => (process.env.CHECKIN_LINK_BASE || '').trim().replace(/\/$/, '') || (req ? publicOrigin(req) : ''),
 });
 
 const handleAdmin = createAdmin({

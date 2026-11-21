@@ -286,28 +286,56 @@
           card(j.private, 'PRIVATE PROFILES'), card(j.orders.sheetRows + j.orders.fileRows, 'SKIDDLE ORDERS LOADED'),
         ]);
         out.appendChild(grid);
-        out.appendChild(h('h3', { text: 'CHECK-IN CODES' }));
-        out.appendChild(h('p', { cls: 'note', text: 'SHOW THE CODE AT THE VENUE (DOOR, SCREENS). FANS TYPE IT IN THE APP ON THE EVENT PAGE. IT ONLY WORKS FROM 1 HOUR BEFORE DOORS TO 3 HOURS AFTER CLOSE. MAKING A NEW CODE REPLACES THE OLD ONE.' }));
+        var o = j.orders || {};
+        out.appendChild(h('p', { cls: 'note', text: 'SKIDDLE ORDERS: ' + (o.updatedAt ? 'LAST FEED ' + when(o.updatedAt) + (o.source ? ' · ' + up(o.source) : '') : 'NO FEED YET') + (o.unmatched && o.unmatched.length ? ' · NOT MATCHED TO AN APP EVENT: ' + o.unmatched.map(function (u) { return up(u.name); }).join(', ') : '') }));
+        out.appendChild(h('h3', { text: 'CHECK-IN QR' }));
+        out.appendChild(h('p', { cls: 'note', text: 'PRINT THE POSTER OR PUT THE DOOR SCREEN UP. FANS SCAN IT IN THE APP (OR WITH THE PHONE CAMERA) TO CHECK IN FOR +50 XP. IT ONLY WORKS FROM 1 HOUR BEFORE DOORS TO 3 HOURS AFTER CLOSE. [ NEW QR ] REPLACES THE OLD ONE. DOOR SCREEN ONLY TURNS THE PRINTED QR OFF, SO PHOTOS OF A POSTER CANNOT BE SHARED.' }));
         if (!j.events.length) out.appendChild(h('p', { cls: 'note', text: 'NO UPCOMING EVENTS' }));
         j.events.forEach(function (e) {
-          var btn = h('button', { cls: 'btn' + (e.code ? '' : ' primary'), type: 'button', text: e.code ? '[ NEW CODE ]' : '[ MAKE CODE ]' });
-          btn.addEventListener('click', function () {
-            if (e.code && !window.confirm('REPLACE ' + e.code + '? THE OLD CODE STOPS WORKING.')) return;
-            btn.disabled = true;
-            api('POST', '/social/code', { eventId: e.id }).then(function (r) {
-              btn.disabled = false;
+          var make = h('button', { cls: 'btn' + (e.qr ? '' : ' primary'), type: 'button', text: e.qr ? '[ NEW QR ]' : '[ MAKE QR ]' });
+          make.addEventListener('click', function () {
+            if (e.qr && !window.confirm('MAKE A NEW QR FOR ' + up(e.title) + '? PRINTED POSTERS OF THE OLD ONE STOP WORKING.')) return;
+            make.disabled = true;
+            api('POST', '/social/qr', { eventId: e.id }).then(function (r) {
+              make.disabled = false;
               if (!r.ok) return msg(status, r.message || r.error, true);
-              msg(status, 'CODE FOR ' + e.title + ': ' + r.code, false);
+              msg(status, 'QR READY FOR ' + up(e.title), false);
               load();
             });
           });
-          out.appendChild(h('div', { cls: 'diary' }, [
+          var preview = h('div');
+          var kids = [
             h('div', { cls: 'diary-head', text: up(e.title) + (e.subtitle ? ' · ' + up(e.subtitle) : '') }),
-            h('div', { cls: 'code-big', text: e.code || '—' }),
+            preview,
             h('div', { cls: 'diary-note', text: 'OPEN ' + when(e.opens) + ' → ' + when(e.closes) + (e.open ? ' · OPEN NOW' : '') }),
-            h('div', { cls: 'diary-note', text: e.going + ' GOING · ' + e.verified + ' VERIFIED · ' + e.checkins + ' CHECKED IN' }),
-            btn,
-          ]));
+            h('div', { cls: 'diary-note', text: e.going + ' GOING · ' + e.verified + ' VERIFIED · ' + e.checkins + ' CHECKED IN' + (e.qr ? ' · QR MADE ' + when(e.qrAt) : '') }),
+          ];
+          if (e.qr) {
+            var dl = h('button', { cls: 'btn primary', type: 'button', text: '[ DOWNLOAD PNG ]' });
+            var pr = h('a', { cls: 'btn', href: '/admin/qr/' + encodeURIComponent(e.id) + '?print=1', target: '_blank', rel: 'noopener', text: '[ PRINT ]' });
+            var door = h('a', { cls: 'btn', href: '/admin/qr/' + encodeURIComponent(e.id) + '/door', target: '_blank', rel: 'noopener', text: '[ DOOR SCREEN ]' });
+            var mode = h('button', { cls: 'btn', type: 'button', text: e.doorOnly ? '[ PRINTED QR: OFF ]' : '[ PRINTED QR: ON ]' });
+            mode.addEventListener('click', function () {
+              mode.disabled = true;
+              api('POST', '/social/qr-mode', { eventId: e.id, doorOnly: !e.doorOnly }).then(function (r) {
+                mode.disabled = false;
+                if (!r.ok) return msg(status, r.message || r.error, true);
+                msg(status, r.doorOnly ? 'DOOR SCREEN ONLY. THE PRINTED QR NO LONGER WORKS.' : 'PRINTED QR WORKS AGAIN.', false);
+                load();
+              });
+            });
+            kids.push(h('div', { cls: 'qr-actions' }, [dl, pr, door, mode]));
+            preview.appendChild(h('div', { cls: 'diary-note', text: 'LOADING QR…' }));
+            window.RRQR.load(e.id, 'print').then(function (q) {
+              clear(preview);
+              if (!q.ok) return preview.appendChild(h('div', { cls: 'diary-note', text: q.message || q.error }));
+              dl.addEventListener('click', function () { window.RRQR.downloadPng(q); });
+              window.RRQR.posterImage(q).then(function (img) { preview.appendChild(img); });
+              if (e.doorOnly) preview.appendChild(h('div', { cls: 'diary-note', text: 'DOOR SCREEN ONLY: THIS PRINTED QR IS SWITCHED OFF.' }));
+            });
+          }
+          kids.push(make);
+          out.appendChild(h('div', { cls: 'diary' }, kids));
         });
       });
     }
