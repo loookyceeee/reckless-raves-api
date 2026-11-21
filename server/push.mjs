@@ -80,6 +80,19 @@ export function pushStatus() {
   return { live: pushLive(), devices: rows.length, signedIn: rows.filter((row) => row.email).length };
 }
 
+/** Device counts by platform, plus how many are signed in (admin stats). */
+export function deviceStats() {
+  const rows = Object.values(devices);
+  const byPlatform = { ios: 0, android: 0, unknown: 0 };
+  for (const row of rows) byPlatform[row.platform === 'ios' || row.platform === 'android' ? row.platform : 'unknown'] += 1;
+  return { total: rows.length, signedIn: rows.filter((row) => row.email).length, ...byPlatform };
+}
+
+/** Number of registered devices for one email (admin crew lookup). */
+export function devicesForEmail(email) {
+  return Object.values(devices).filter((row) => row.email === email).length;
+}
+
 export function emailsWithDevices() {
   return new Set(Object.values(devices).filter((row) => row.email && row.topics?.includes('crew')).map((row) => row.email));
 }

@@ -5,11 +5,13 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { handleContent, handlePoster, initContent } from './content.mjs';
+import { contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
+import { createAdmin } from './admin.mjs';
+import { downloadsSummary, initDownloads } from './downloads.mjs';
 import { attachCors } from './cors.mjs';
 import { avatarManifest, handleAvatarAsset } from './avatar.mjs';
-import { checkLevelUps, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
-import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
+import { checkLevelUps, deviceStats, devicesForEmail, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
+import { acknowledge, explicitAvatarBase, issuedCodesFor, storedAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
 import { eventsForEmail, exportEventsSince, finishRave, initGameEvents, postPoster, startRave } from './game-events.mjs';
 import { gameXp } from './game-xp.mjs';
 
@@ -1100,6 +1102,13 @@ async function handleCrewDelete(req, res) {
     sendJson(res, 401, { ok: false, error: 'SESSION' });
     return;
   }
+  const { ledgerKept } = deleteCrewAccount(email);
+  console.log(`Crew account deleted (ledger ${ledgerKept ? 'kept: purchase records' : 'clear'})`);
+  sendJson(res, 200, { ok: true, deleted: true });
+}
+
+/** Removes a Crew account (also used by the admin page). Returns { ledgerKept }. */
+function deleteCrewAccount(email) {
   delete accounts[email];
   saveAccounts();
   forgetCodes(email);
@@ -1123,8 +1132,7 @@ async function handleCrewDelete(req, res) {
   } catch {
     // no ledger file
   }
-  console.log(`Crew account deleted (ledger ${ledgerKept ? 'kept: purchase records' : 'clear'})`);
-  sendJson(res, 200, { ok: true, deleted: true });
+  return { ledgerKept };
 }
 
 async function handleCrewWrite(req, res) {
@@ -1756,10 +1764,42 @@ function launchReset() {
   console.log(`Crew launch reset ${id}: ledger cleared, outfits cleared`);
 }
 
+const handleAdmin = createAdmin({
+  dataDir,
+  authSecret,
+  clientIp,
+  publicOrigin,
+  normalizeEmail,
+  validEmail,
+  accounts,
+  existingAccount,
+  saveAccounts,
+  hasPin,
+  pinLockLeftMs,
+  refreshLedger,
+  xpFor,
+  standing,
+  ownedFor,
+  storedAvatarBase,
+  issuedCodesFor,
+  crewConfig,
+  deleteCrewAccount,
+  pushLive,
+  sendPush,
+  targetTokens,
+  deviceStats,
+  devicesForEmail,
+  contentEvents,
+  exportEventsSince,
+  downloadsSummary,
+});
+
 const server = createServer((req, res) => {
-  attachCors(res);
   try {
   const url = new URL(req.url || '/', 'http://localhost');
+  // Private admin page: no public CORS headers on these responses.
+  if (handleAdmin(req, res, url)) return;
+  attachCors(res);
   if (wheelApiPaths.has(url.pathname)) {
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'HEAD') {
       sendJson(res, 405, { ok: false, error: 'UPLOAD' });
@@ -2017,6 +2057,7 @@ initContent(dataDir);
 initCrew(dataDir);
 initGameEvents(dataDir);
 initPush(dataDir);
+initDownloads(dataDir);
 fillPending();
 setInterval(() => void runLevelUpPushes(), 10 * 60 * 1000).unref?.();
 setInterval(() => fillPending(), 5 * 60 * 1000).unref?.();

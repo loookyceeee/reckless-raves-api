@@ -602,6 +602,11 @@ function instagramPayload() {
   };
 }
 
+/** Read-only copy of the cached events list (admin tap-target picker). */
+export function contentEvents() {
+  return (state.events || []).map((event) => ({ id: event.id, title: event.title, subtitle: event.subtitle || '', startDate: event.startDate || null }));
+}
+
 export function refreshContent() {
   if (!dataDir) return Promise.resolve();
   if (refreshing) return refreshing;

@@ -80,10 +80,28 @@ Event log: append-only `/data/game-events.jsonl` (same directory as `accounts.js
 - CORS: `https://recklessraves.co.uk` and `https://www.recklessraves.co.uk` for `GET`/`POST` (header `Content-Type`). `DELETE` is not exposed cross-origin.
 - Known gap: whoever sets a PIN first owns an email that has no PIN yet (identity is still email only).
 
+## Admin page (`/admin`)
+
+Private, mobile-first page for Luke (black and white, ALL CAPS). `/admin` redirects to `/admin/login` when signed out. Code: `server/admin.mjs`, `server/admin/app.js`, `server/admin/app.css`, `server/downloads.mjs`.
+
+- **Auth:** env `ADMIN_PASSWORD`. Unset = the login page says ADMIN IS OFF and every admin request is refused (login `503`, API `401 ADMIN_OFF`). The password is compared with scrypt + `timingSafeEqual`, never stored or logged. Login sets `__Host-rr_admin` (HttpOnly, Secure, SameSite=Strict, 30 days, HMAC-signed with `AUTH_SECRET`). Changing `ADMIN_PASSWORD` signs every session out; `[ LOG OUT ]` revokes that session (`/data/admin-sessions.json`).
+- **Limits:** 5 failed logins per IP per 15 minutes (then `429`, even for the right password), plus 30 failed logins per 15 minutes across all IPs.
+- **CSRF:** every POST needs a same-origin `Origin` (or `Referer`) and a CSRF token tied to the session (`X-CSRF-Token`; the login form uses a double-submit token). Admin pages use `Referrer-Policy: same-origin` so browsers send a real `Origin` on POSTs.
+- **Headers:** `Cache-Control: no-store`, `X-Robots-Tag: noindex`, CSP `script-src 'self'`, `X-Frame-Options: DENY`, and no public CORS headers. No secret (`OAUTH_ADMIN_KEY`, Expo/Apple keys) is sent to the browser; the page calls the server internals directly.
+- **NOTIFY:** title (60) + message (180), live counters and ALL CAPS preview, optional tap target (`data.path`: `/`, `/events`, `/event/<id>` from the cached events, `/shop`, `/crew`, `/music` = RECORDS, `/gallery`). `[ CHECK ]` = dry run with the phone count; `[ SEND TO N PHONES ]` asks to confirm and is refused (`409`) if the count changed. Same rule as `/api/push/send`: fans are only reached when `PUSH_LIVE=1`, otherwise it is a dry run. `[ TEST TO MY PHONE ]` sends to one email's phones (max 3, default `loookyceeee@gmail.com`), also while `PUSH_LIVE` is off. Every send/test is kept in `/data/push-history.jsonl` (time, title, body, path, sent/count, errors; no tokens).
+- **CREW:** lookup by email (read-only; never creates an account or issues a code): XP, level, crew, avatar base, PIN set/locked, crew codes issued, owned merch, phones, game events. Actions with a confirm step: `[ UNLOCK PIN ]` (clears the lockout), `[ RESET PIN ]` (removes the PIN), `[ DELETE ACCOUNT ]` (type the email; same deletion as `DELETE /api/crew`).
+- **STATS:** crew accounts, accounts with a PIN, pins locked, phones with notifications (iOS/Android/unknown, signed in), game events recorded/counted today (London day), and read-only flags (`PUSH_LIVE`, `PIN_SETUP_LIVE`, `GAME_XP_LIVE`, `CREW_CODES_LIVE`, `CREW_RESET_ID` set or not). No toggles.
+- **DOWNLOADS:** iOS first-time downloads (product types 1/1F/1T/F1…; updates 7/7F and re-downloads 3/3F counted separately) from the App Store Connect Sales and Trends API (`/v1/salesReports`, SALES/SUMMARY/DAILY), refreshed every 6 hours and cached per day in `/data/asc-downloads.json`: total since `ASC_SALES_FROM` (default 2026-11-20), last 7 days, yesterday. Apple's data is about a day behind. Env: `ASC_KEY_P8` (base64 of the .p8), `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_VENDOR_NUMBER` (App Store Connect > Payments and Financial Reports), optional `ASC_APP_ID` (default 6834422153). Android shows CONNECT PLAY REPORTING plus the Android notification-device count as a labelled lower bound until Play reporting is connected.
+- **GAME:** latest 50 RECKLESS WORLD events (type, masked email, time, counted, reason, test) and `[ DOWNLOAD CSV ]` (all events, masked emails).
+- **LOG:** every admin action (login, failed login, lookups, sends, PIN actions, deletes, CSRF rejections) goes to `/data/admin-audit.jsonl` without secrets; the last 20 are shown.
+- **Checks:** `node scripts/admin-check.mjs` (local servers on a temp `DATA_DIR`; only dry-run pushes).
+
 ## Google re-auth
 
 `GET /oauth/google/start?key=<OAUTH_ADMIN_KEY>` sends the owner to Google consent (offline, prompt=consent, Drive + Sheets read/write). `/oauth/google/callback` stores the refresh token in `/data/google-oauth.json` (overrides `GOOGLE_REFRESH_TOKEN`) and tests it. Tokens are never logged or shown. The callback URI (`OAUTH_REDIRECT_URI`, default `https://<host>/oauth/google/callback`) must be an authorised redirect URI on the OAuth client.
 
 ## Environment
+
+Admin page: `ADMIN_PASSWORD` (unset = admin off), `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_VENDOR_NUMBER`, optional `ASC_APP_ID`, `ASC_SALES_FROM`.
 
 `AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off), `GAME_XP_LIVE` (default off; RECKLESS WORLD events stay `test: true` and do not enter the XP ledger) and `CREW_RESET_ID`. Never commit values.
