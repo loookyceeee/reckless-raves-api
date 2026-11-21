@@ -300,15 +300,15 @@ assert(meLater.body.today.poster_placed === 1 && meLater.body.today.digital_rave
 assert(meLater.body.week.poster_placed === 1 && meLater.body.week.digital_rave_attended === 0, 'me week follows the clock', meLater.body.week);
 
 process.env.GAME_XP_LIVE = '1';
-now = Date.parse('2026-11-23T00:00:00.000Z');
+now = Date.parse('2026-11-21T00:00:00.000Z');
 const live = await poster(tokenD, 'live-1');
 assert(live.body.counted === true, 'live poster counted', live.body);
 const liveLine = logLines().find((line) => line.posterId === 'live-1');
-assert(liveLine.test === false && liveLine.at === '2026-11-23T00:00:00.000Z', 'counted event on the cutoff is not a test', liveLine);
+assert(liveLine.test === false && liveLine.at === '2026-11-21T00:00:00.000Z', 'counted event on the cutoff is not a test', liveLine);
 const liveDup = await poster(tokenD, 'live-1');
 assert(liveDup.status === 200 && liveDup.body.counted === false && liveDup.body.reason === 'DUPLICATE', 'duplicate while live', liveDup.body);
 assert(logLines().find((line) => line.posterId === 'live-1' && line.counted === false).test === true, 'an uncounted event stays test:true while GAME_XP_LIVE is on');
-now = Date.parse('2026-11-22T22:00:00.000Z');
+now = Date.parse('2026-11-20T22:00:00.000Z');
 const before = await poster(tokenD, 'live-2');
 assert(before.body.counted === true, 'poster before the cutoff still counts as a test', before.body);
 assert(logLines().find((line) => line.posterId === 'live-2').test === true, 'before cutoff stays test:true while live');
@@ -394,7 +394,7 @@ const reloaded = await poster(tokenA, 'poster-1');
 assert(reloaded.status === 200 && reloaded.body.counted === false && reloaded.body.reason === 'DUPLICATE', 'reloading the log keeps a counted poster spent', reloaded.body);
 
 const all = logLines();
-assert(all.every((line) => line.test === true || (line.test === false && line.counted === true && line.at >= '2026-11-23T00:00:00.000Z')), 'test flag rules', all.filter((line) => line.test === false));
+assert(all.every((line) => line.test === true || (line.test === false && line.counted === true && line.at >= '2026-11-21T00:00:00.000Z')), 'test flag rules', all.filter((line) => line.test === false));
 
 console.log(`game-events-check: ok (${all.length} log lines, data ${dataDir})`);
 process.exit(0);

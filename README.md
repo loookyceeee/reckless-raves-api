@@ -35,7 +35,7 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
   If a crew has no free loaded code, the fan is queued in `/data/crew-codes-pending.json` (highest crew only) and filled automatically within 5 minutes of codes being loaded.
 - **Display:** fans see "coming soon" until env `CREW_CODES_LIVE=1`. `/api/health` → `xpLedger.crewCodes` shows `live`, `loadedListed`, `queuedFans` and per crew `total / free / loadedFree`.
 - **Issued log:** every issued code is appended to the XP Sheet tab `Issued`, in the column order from crew-config `issuedColumns`. Rows queue in `/data/issued-queue.json` while Google is down and flush when it is back. The refresh token needs the `spreadsheets` (write) scope for this.
-- **Launch reset:** set env `CREW_RESET_ID` to a new value (e.g. `launch-2026-11-23`) and redeploy: clears `/data/xp-ledger.json`, saved outfits and popup markers once. Or `node server/scripts/launch-reset.mjs`.
+- **Launch reset:** set env `CREW_RESET_ID` to a new value (e.g. `launch-2026-11-21`) and redeploy: clears `/data/xp-ledger.json`, saved outfits and popup markers once. Or `node server/scripts/launch-reset.mjs`.
 - **DAY 1 CREW** badge for anyone who signs in 23–29 Nov 2026.
 
 ## RECKLESS WORLD game events
@@ -66,7 +66,7 @@ Event log: append-only `/data/game-events.jsonl` (same directory as `accounts.js
 - Rave id: `wr:<raveId>:<sha256(normalised email) hex[:12]>:<YYYY-MM-DD>`. The London date is included so the same rave can count on a later London day when the caps allow. The same rave, email and London day share one id.
 - Poster id: `wp:<posterId>:<sha256(normalised email) hex[:12]>`. No date. Only a counted line consumes the id.
 
-**Flag:** `GAME_XP_LIVE` (default off: unset or `0`). While off, every line is `test: true`. While on, counted events with `at >= 2026-11-23T00:00:00Z` are `test: false`. Nothing here writes the XP ledger either way. Check locally with `node scripts/game-events-check.mjs`.
+**Flag:** `GAME_XP_LIVE` (default off: unset or `0`). While off, every line is `test: true`. While on, counted events with `at >= 2026-11-21T00:00:00Z` (midnight 21 Nov 2026, Europe/London) are `test: false`. Nothing here writes the XP ledger either way. Check locally with `node scripts/game-events-check.mjs`.
 
 ## Account PIN (opt-in, dormant until `PIN_SETUP_LIVE=1`)
 

@@ -28,7 +28,7 @@ export const gameXp = {
   minSeconds: 600,
   sessionTtlMs: 6 * 60 * 60 * 1000,
   // Counted events at or after this instant are real (test:false) only when GAME_XP_LIVE is on.
-  liveFrom: '2026-11-23T00:00:00.000Z',
+  liveFrom: '2026-11-21T00:00:00.000Z',
   rate: {
     emailMax: 30,
     ipMax: 120,

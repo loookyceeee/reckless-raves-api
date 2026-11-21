@@ -325,7 +325,7 @@
   "redeemed_order_id"
  ],
  "launch": {
-  "xp_start_instant_utc": "2026-11-23T00:00:00Z",
+  "xp_start_instant_utc": "2026-11-21T00:00:00Z",
   "timezone": "Europe/London",
   "everyone_starts_at": 0
  }

@@ -1564,7 +1564,7 @@ async function runLevelUpPushes() {
 }
 
 /**
- * One-shot launch reset. Set env CREW_RESET_ID to any new value (e.g. "launch-2026-11-23")
+ * One-shot launch reset. Set env CREW_RESET_ID to any new value (e.g. "launch-2026-11-21")
  * and redeploy: on boot the server clears /data/xp-ledger.json and every saved outfit and
  * popup marker, then records the id so it never runs twice. Also: node server/scripts/launch-reset.mjs
  */
