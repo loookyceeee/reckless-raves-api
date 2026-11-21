@@ -10,6 +10,8 @@ import { attachCors } from './cors.mjs';
 import { avatarManifest, handleAvatarAsset } from './avatar.mjs';
 import { checkLevelUps, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
 import { acknowledge, explicitAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
+import { eventsForEmail, exportEventsSince, finishRave, initGameEvents, postPoster, startRave } from './game-events.mjs';
+import { gameXp } from './game-xp.mjs';
 
 const require = createRequire(import.meta.url);
 const Busboy = require('busboy');
@@ -1566,6 +1568,168 @@ async function runLevelUpPushes() {
  * and redeploy: on boot the server clears /data/xp-ledger.json and every saved outfit and
  * popup marker, then records the id so it never runs twice. Also: node server/scripts/launch-reset.mjs
  */
+function sendGameJson(res, status, payload) {
+  res.setHeader('Cache-Control', 'no-store');
+  sendJson(res, status, payload);
+}
+
+function gameEventsOptions(res) {
+  res.writeHead(204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Key',
+    'Access-Control-Max-Age': '86400',
+  });
+  res.end();
+}
+
+function gameIpLimited(req, res, bucket) {
+  if (rateLimited(`${bucket}:ip:${clientIp(req)}`, gameXp.rate.ipMax, gameXp.rate.windowMs)) {
+    sendGameJson(res, 429, { ok: false, error: 'RATE' });
+    return true;
+  }
+  return false;
+}
+
+function gameEmailLimited(req, res, email) {
+  if (rateLimited(`game-events:email:${email}`, gameXp.rate.emailMax, gameXp.rate.windowMs)) {
+    sendGameJson(res, 429, { ok: false, error: 'RATE' });
+    return true;
+  }
+  return false;
+}
+
+function gameCrewEmail(req, res) {
+  const email = readSession(req.headers.authorization);
+  if (!email) {
+    sendGameJson(res, 401, { ok: false, error: 'SESSION' });
+    return null;
+  }
+  return email;
+}
+
+async function readGameBody(req, res) {
+  try {
+    const body = await readJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      sendGameJson(res, 400, { ok: false, error: 'BODY' });
+      return null;
+    }
+    return body;
+  } catch {
+    sendGameJson(res, 400, { ok: false, error: 'BODY' });
+    return null;
+  }
+}
+
+function dropGameBody(req) {
+  req.resume();
+}
+
+async function handleGameRaveStart(req, res) {
+  try {
+    if (gameIpLimited(req, res, 'game-events')) {
+      dropGameBody(req);
+      return;
+    }
+    const email = gameCrewEmail(req, res);
+    if (!email || gameEmailLimited(req, res, email)) {
+      dropGameBody(req);
+      return;
+    }
+    const body = await readGameBody(req, res);
+    if (!body) return;
+    const result = startRave({ email, raveId: body.raveId });
+    sendGameJson(res, result.status, result.body);
+  } catch (error) {
+    console.error('game rave start', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendGameJson(res, 500, { ok: false, error: 'SERVER' });
+  }
+}
+
+async function handleGameRaveFinish(req, res) {
+  try {
+    if (gameIpLimited(req, res, 'game-events')) {
+      dropGameBody(req);
+      return;
+    }
+    const email = gameCrewEmail(req, res);
+    if (!email || gameEmailLimited(req, res, email)) {
+      dropGameBody(req);
+      return;
+    }
+    const body = await readGameBody(req, res);
+    if (!body) return;
+    const result = finishRave({ email, sessionId: body.sessionId });
+    sendGameJson(res, result.status, result.body);
+  } catch (error) {
+    console.error('game rave finish', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendGameJson(res, 500, { ok: false, error: 'SERVER' });
+  }
+}
+
+async function handleGamePoster(req, res) {
+  try {
+    if (gameIpLimited(req, res, 'game-events')) {
+      dropGameBody(req);
+      return;
+    }
+    const email = gameCrewEmail(req, res);
+    if (!email || gameEmailLimited(req, res, email)) {
+      dropGameBody(req);
+      return;
+    }
+    const body = await readGameBody(req, res);
+    if (!body) return;
+    const result = postPoster({ email, type: body.type, posterId: body.posterId });
+    sendGameJson(res, result.status, result.body);
+  } catch (error) {
+    console.error('game poster', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendGameJson(res, 500, { ok: false, error: 'SERVER' });
+  }
+}
+
+function handleGameMe(req, res) {
+  try {
+    if (gameIpLimited(req, res, 'game-events')) return;
+    const email = gameCrewEmail(req, res);
+    if (!email || gameEmailLimited(req, res, email)) return;
+    sendGameJson(res, 200, eventsForEmail(email));
+  } catch (error) {
+    console.error('game events me', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendGameJson(res, 500, { ok: false, error: 'SERVER' });
+  }
+}
+
+function handleGameExport(req, res, url) {
+  try {
+    if (gameIpLimited(req, res, 'game-export')) return;
+    if (!adminKeyOk(String(req.headers['x-admin-key'] || ''))) {
+      sendGameJson(res, 403, { ok: false, error: 'ADMIN' });
+      return;
+    }
+    const sinceRaw = url.searchParams.get('since');
+    let sinceMs = 0;
+    if (sinceRaw) {
+      sinceMs = Date.parse(sinceRaw);
+      if (Number.isNaN(sinceMs)) {
+        sendGameJson(res, 400, { ok: false, error: 'SINCE' });
+        return;
+      }
+    }
+    const body = exportEventsSince(sinceMs);
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body),
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
+  } catch (error) {
+    console.error('game events export', error instanceof Error ? error.message : error);
+    if (!res.headersSent) sendGameJson(res, 500, { ok: false, error: 'SERVER' });
+  }
+}
+
 function launchReset() {
   const id = (process.env.CREW_RESET_ID || '').trim();
   if (!id) return;
@@ -1710,6 +1874,40 @@ const server = createServer((req, res) => {
     void handleCrewDelete(req, res);
     return;
   }
+  if (
+    url.pathname === '/api/crew/events' ||
+    url.pathname === '/api/crew/events/me' ||
+    url.pathname === '/api/crew/events/export' ||
+    url.pathname === '/api/crew/events/rave/start' ||
+    url.pathname === '/api/crew/events/rave/finish'
+  ) {
+    if (req.method === 'OPTIONS') {
+      gameEventsOptions(res);
+      return;
+    }
+    if (url.pathname === '/api/crew/events/export' && req.method === 'GET') {
+      handleGameExport(req, res, url);
+      return;
+    }
+    if (url.pathname === '/api/crew/events/me' && req.method === 'GET') {
+      handleGameMe(req, res);
+      return;
+    }
+    if (url.pathname === '/api/crew/events/rave/start' && req.method === 'POST') {
+      void handleGameRaveStart(req, res);
+      return;
+    }
+    if (url.pathname === '/api/crew/events/rave/finish' && req.method === 'POST') {
+      void handleGameRaveFinish(req, res);
+      return;
+    }
+    if (url.pathname === '/api/crew/events' && req.method === 'POST') {
+      void handleGamePoster(req, res);
+      return;
+    }
+    sendGameJson(res, 405, { ok: false, error: 'METHOD' });
+    return;
+  }
   if (url.pathname === '/avatar/manifest.json') {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Max-Age': '86400' });
@@ -1817,6 +2015,7 @@ launchReset();
 loadLedgerFile();
 initContent(dataDir);
 initCrew(dataDir);
+initGameEvents(dataDir);
 initPush(dataDir);
 fillPending();
 setInterval(() => void runLevelUpPushes(), 10 * 60 * 1000).unref?.();
