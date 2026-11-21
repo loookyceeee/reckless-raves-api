@@ -38,6 +38,22 @@ services:
       # sync:false so a later dashboard flip is not reset by a blueprint sync. Unset or 0 = off.
       - key: GAME_XP_LIVE
         sync: false
+      # RECKLESS social (GOING, check-ins, rave diary, badges). Unset or 0 = off for every fan.
+      # SOCIAL_TEST_EMAILS (comma-separated) can use it while it is off; their XP rows are test:true.
+      - key: SOCIAL_LIVE
+        sync: false
+      - key: SOCIAL_TEST_EMAILS
+        sync: false
+      # Check-in QR links. Unset = the QR points at this service's own host (onrender.com).
+      # A custom domain here also needs the app's associatedDomains / intent filter updated and a new build.
+      - key: CHECKIN_LINK_BASE
+        sync: false
+      # Android App Links: SHA-256 signing cert fingerprint(s) from EAS credentials, comma-separated. Unset = assetlinks.json 404.
+      - key: ANDROID_CERT_SHA256
+        sync: false
+      # iOS universal links. Unset = XY99374YG6.
+      - key: APPLE_TEAM_ID
+        sync: false
       # Admin page (/admin). Unset = admin off. Luke sets the value in the dashboard.
       - key: ADMIN_PASSWORD
         sync: false

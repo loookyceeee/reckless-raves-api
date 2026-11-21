@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
+import { contentEventById, contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
+import { createSocial } from './social.mjs';
 import { createAdmin } from './admin.mjs';
 import { downloadsSummary, initDownloads } from './downloads.mjs';
 import { attachCors } from './cors.mjs';
@@ -749,6 +750,7 @@ async function refreshLedger() {
       ledgerStatus.sheetReadAt = new Date().toISOString();
       ledgerStatus.sheetError = null;
       void refreshOwnedSheet(token);
+      void refreshTicketsSheet(token);
       void refreshLoadedSheet(token);
       void flushIssued();
       const emails = {};
@@ -786,6 +788,24 @@ async function refreshOwnedSheet(token) {
       if (key.includes('@') && name) (map[key] ||= []).push(name);
     }
     setOwnedSheet(map);
+  } catch {
+    // tab is optional
+  }
+}
+
+/**
+ * "Tickets" tab on the XP Sheet (optional): email | skiddle_event_id | order_id | purchased_at.
+ * Used only for the VERIFIED tick on GOING lists. Missing tab = nobody is verified.
+ */
+async function refreshTicketsSheet(token) {
+  try {
+    const range = encodeURIComponent('Tickets!A2:D');
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${xpSheetId}/values/${range}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    social.setTicketOrders(payload.values || []);
   } catch {
     // tab is optional
   }
@@ -912,7 +932,7 @@ function cleanFit(fit) {
 
 function accountFor(email) {
   const key = normalizeEmail(email);
-  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit() };
+  if (!accounts[key]) accounts[key] = { xp: 0, fit: emptyFit(), createdAt: new Date().toISOString() };
   accounts[key].fit = cleanFit(accounts[key].fit);
   accounts[key].xp = Math.max(0, Math.floor(Number(accounts[key].xp) || 0));
   const stored = validAvatarBase(accounts[key].avatarBase);
@@ -1112,6 +1132,7 @@ function deleteCrewAccount(email) {
   delete accounts[email];
   saveAccounts();
   forgetCodes(email);
+  social.forget(email);
   forgetDevices(email);
   revoked[email] = Date.now();
   mkdirSync(path.dirname(revokedPath), { recursive: true });
@@ -1764,6 +1785,28 @@ function launchReset() {
   console.log(`Crew launch reset ${id}: ledger cleared, outfits cleared`);
 }
 
+const social = createSocial({
+  dataDir,
+  accounts,
+  existingAccount,
+  accountFor,
+  saveAccounts,
+  readSession,
+  normalizeEmail,
+  rateLimited,
+  clientIp,
+  xpFor,
+  refreshLedger,
+  standing,
+  crewConfig,
+  contentEventById,
+  contentEvents,
+  adminKeyOk,
+  sendJson,
+  // Check-in QR links: https://<CHECKIN_LINK_BASE or this API's public origin>/checkin/<eventId>/<token>.
+  checkinBase: (req) => (process.env.CHECKIN_LINK_BASE || '').trim().replace(/\/$/, '') || (req ? publicOrigin(req) : ''),
+});
+
 const handleAdmin = createAdmin({
   dataDir,
   authSecret,
@@ -1792,6 +1835,7 @@ const handleAdmin = createAdmin({
   contentEvents,
   exportEventsSince,
   downloadsSummary,
+  social,
 });
 
 const server = createServer((req, res) => {
@@ -1800,6 +1844,7 @@ const server = createServer((req, res) => {
   // Private admin page: no public CORS headers on these responses.
   if (handleAdmin(req, res, url)) return;
   attachCors(res);
+  if (social.handle(req, res, url)) return;
   if (wheelApiPaths.has(url.pathname)) {
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'HEAD') {
       sendJson(res, 405, { ok: false, error: 'UPLOAD' });

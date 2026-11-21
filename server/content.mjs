@@ -607,6 +607,11 @@ export function contentEvents() {
   return (state.events || []).map((event) => ({ id: event.id, title: event.title, subtitle: event.subtitle || '', startDate: event.startDate || null }));
 }
 
+/** Full cached event by app id (social check-ins, GOING lists). Past events drop out of the list after they end. */
+export function contentEventById(id) {
+  return (state.events || []).find((event) => event.id === id) || null;
+}
+
 export function refreshContent() {
   if (!dataDir) return Promise.resolve();
   if (refreshing) return refreshing;
@@ -630,6 +635,8 @@ export function initContent(dir) {
   mkdirSync(posterDir, { recursive: true });
   try { state = { ...state, ...JSON.parse(readFileSync(statePath(), 'utf8')) }; } catch { /* first run */ }
   try { ({ posters = {}, probes = {} } = JSON.parse(readFileSync(metaPath(), 'utf8'))); } catch { /* first run */ }
+  // CONTENT_REFRESH=off keeps the cached DATA_DIR/content.json as-is (local test servers only).
+  if (/^(0|off|false|no)$/i.test(String(process.env.CONTENT_REFRESH || '').trim())) return;
   void refreshContent();
   setInterval(() => { void refreshContent(); }, REFRESH_MS).unref?.();
 }

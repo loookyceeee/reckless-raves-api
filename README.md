@@ -68,6 +68,43 @@ Event log: append-only `/data/game-events.jsonl` (same directory as `accounts.js
 
 **Flag:** `GAME_XP_LIVE` (default off: unset or `0`). While off, every line is `test: true`. While on, counted events with `at >= 2026-11-21T00:00:00Z` (midnight 21 Nov 2026, Europe/London) are `test: false`. Nothing here writes the XP ledger either way. Check locally with `node scripts/game-events-check.mjs`.
 
+## RECKLESS social, phase 1 (dormant until `SOCIAL_LIVE=1`)
+
+Crew handles, GOING lists with a Skiddle VERIFIED tick, event check-ins, the rave diary and badges (`server/social.mjs`).
+Everything counts from go-live, **21 Nov 2026**: nothing is backfilled from earlier nights.
+
+- **Off (default):** every fan endpoint answers `403 SOCIAL_OFF`, nothing is written, and `/api/crew` and `/api/content` are unchanged.
+  `SOCIAL_TEST_EMAILS` (comma-separated) can use it while it is off; their XP rows are written `test:true`.
+- **Handles:** 2–12 of `A–Z 0–9 _`, stored UPPERCASE, unique, reserved and profanity lists, one change a day. Emails are never in a public payload.
+- **Privacy:** `private: true` hides the profile card and drops the fan from GOING lists and faces (they still count).
+- **GOING:** `POST/DELETE /api/social/event/:id/going` (needs a handle). `GET /api/social/event/:id` = count, verified count, up to 6 faces
+  (signed out: counts only). `GET /api/social/event/:id/going` = the list.
+- **VERIFIED:** a Skiddle order for that event with the same email. Sources: XP Sheet tab **Tickets** (`email | skiddle_event_id | order_id | purchased_at`),
+  the Skiddle feed in `DATA_DIR/skiddle-orders.json`, and legacy `orders` in that file. No source = nobody is verified.
+- **Skiddle feed:** Skiddle has no promoter order API or webhook, so the source is the Promotion Centre order CSV export (one row per ticket).
+  `node scripts/skiddle-orders-push.mjs [--dry-run] [--csv-dir DIR] [--since-days 2] [--api URL]` reads the exports (default: the Loyalty
+  xp-ingest `data/skiddle*` folders), hashes emails (sha256 of the lowercase email, nothing else leaves the box), dedupes by order id, drops
+  cancelled/refunded rows, and `POST /api/social/skiddle-orders` with `X-Admin-Key` (from `OAUTH_ADMIN_KEY` or `~/.secrets/render/OAUTH_ADMIN_KEY`).
+  The server maps each Skiddle event to an app event by start time (±5 min; name words break ties; an explicit `skiddleEventId` wins),
+  replaces just the pushed events, and lists the rest as unmatched on the admin SOCIAL tab.
+- **Check-in (QR):** the admin SOCIAL tab makes a QR per event: A4 poster ([ DOWNLOAD PNG ], [ PRINT ]) and a door screen at `/admin/qr/<eventId>/door`
+  that changes every minute. The QR is `<CHECKIN_LINK_BASE or this host>/checkin/<eventId>/<token>`; the token is an HMAC of a per-event secret
+  (static for the poster, minute-slot for the door, current + previous slot accepted). [ NEW QR ] replaces the secret, so old posters stop working;
+  PRINTED QR: OFF accepts the door screen only. The app scans it (or opens the universal link) and calls `POST /api/social/event/:id/checkin { token }`,
+  which works from 1 hour before the Skiddle start to 3 hours after the end and makes the diary entry (poster, date, venue and lineup are snapshotted).
+  Without the app the link opens a page with App Store / Google Play buttons. `/.well-known/apple-app-site-association` covers `/checkin/*`;
+  `/.well-known/assetlinks.json` needs `ANDROID_CERT_SHA256`.
+- **XP** (same pattern as RECKLESS WORLD): 50 for a check-in (max 2 counted a London day), 25 once per entry when it has a note and a photo.
+  Rows go to `DATA_DIR/social-events.jsonl` with `counted`, `reason`, `test`, `xp`; `GET /api/social/export?since=ISO` with `X-Admin-Key`.
+  Nothing here writes the XP ledger: RECKLESS CREW LOYALTY adds counted `test:false` rows to the Sheet.
+- **Diary:** `GET /api/social/diary`, `GET|PUT|DELETE /api/social/diary/:eventId` (note max 280), `POST|DELETE /api/social/diary/:eventId/photo`
+  (raw JPEG/PNG/WebP body, max 8 MB; rotated, resized to 1440 px, re-encoded as JPEG with all metadata stripped; stored in `DATA_DIR/social-photos`, 300 MB cap).
+- **Badges:** FOUNDING RAVER (account made, or first signed in, in the crew-config `day1` window), GEARBOX 008 (check-in at `temple-008`),
+  5 RAVES (5 check-ins from go-live), plus the crew code badges (highest crew reached + the next one). `GET|PUT /api/social/me`.
+- **Admin:** SOCIAL tab (check-in QRs, counts, Skiddle feed status), and CREW lookup shows handle, privacy, GOING and diary with REMOVE HANDLE (the handle is then blocked) /
+  REMOVE PHOTO / REMOVE NOTE. Deleting an account removes its social data and photos.
+- Checks: `node scripts/social-check.mjs`.
+
 ## Account PIN (opt-in, dormant until `PIN_SETUP_LIVE=1`)
 
 - Stored per email on the account row in `/data/accounts.json` as `pinHash` (`scrypt$<salt>$<hash>`, 16-byte random salt, N=16384). The PIN is never stored, logged or returned. Only accounts with a PIN are affected; everything else (including `appreview@recklessraves.co.uk`) is email-only as before.

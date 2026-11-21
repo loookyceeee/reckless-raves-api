@@ -27,7 +27,7 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };
 
 const flagOn = (key) => /^(1|true|yes|on)$/i.test(String(process.env[key] || '').trim());
@@ -82,6 +82,7 @@ export function createAdmin(deps) {
     contentEvents,
     exportEventsSince,
     downloadsSummary,
+    social,
   } = deps;
 
   const auditPath = path.join(dataDir, 'admin-audit.jsonl');
@@ -377,6 +378,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         PIN_SETUP_LIVE: flagOn('PIN_SETUP_LIVE'),
         GAME_XP_LIVE: flagOn('GAME_XP_LIVE'),
         CREW_CODES_LIVE: flagOn('CREW_CODES_LIVE'),
+        SOCIAL_LIVE: flagOn('SOCIAL_LIVE'),
         CREW_RESET_ID: Boolean(String(process.env.CREW_RESET_ID || '').trim()),
       },
       downloads: { ios: downloadsSummary(), android: { connected: false, devices: deviceStats().android } },
@@ -423,6 +425,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       owned: owned.map((id) => wardrobe.find((piece) => piece.id === id)?.name || id),
       devices,
       game: { total: mine.length, countedToday: mine.filter((event) => event.counted && londonDay(Date.parse(event.at)) === today).length },
+      social: social ? social.adminLookup(email) : null,
     };
   }
 
@@ -445,6 +448,11 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         for (const event of gameEvents()) rows.push([event.at, event.type, maskEmail(event.email), event.raveId || '', event.posterId || '', event.counted, event.reason || '', event.test].map(cell).join(','));
         audit(req, 'events_csv');
         return send(res, 200, `${rows.join('\n')}\n`, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="game-events-${londonDay(Date.now())}.csv"` });
+      }
+      if (route === '/social' && social) return json(res, 200, { ok: true, ...social.adminSummary(contentEvents()) });
+      if (route === '/social/qr' && social) {
+        const result = social.adminQr(String(url.searchParams.get('eventId') || ''), url.searchParams.get('kind') === 'door' ? 'door' : 'print', req);
+        return json(res, result.status, result.body, { 'Cache-Control': 'no-store' });
       }
       if (route === '/crew') {
         const email = normalizeEmail(url.searchParams.get('email'));
@@ -505,10 +513,25 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       console.log(`Admin page push (${kind}): ${result.dryRun ? 'dry run' : 'sent'} ${result.sent}/${result.count}`);
       return json(res, 200, { ok: true, ...row });
     }
+    if (route === '/social/qr' && social) {
+      const result = social.adminNewQr(String(body.eventId || ''));
+      if (result.body.ok) audit(req, 'social_checkin_qr', { eventId: result.body.eventId });
+      return json(res, result.status, result.body);
+    }
+    if (route === '/social/qr-mode' && social) {
+      const result = social.adminQrMode(String(body.eventId || ''), body.doorOnly === true);
+      if (result.body.ok) audit(req, 'social_checkin_qr_mode', { eventId: result.body.eventId, doorOnly: result.body.doorOnly });
+      return json(res, result.status, result.body);
+    }
     if (route === '/crew/action') {
       const email = normalizeEmail(body.email);
       if (!validEmail(email)) return json(res, 400, { ok: false, error: 'EMAIL', message: 'ENTER A VALID EMAIL' });
       const action = String(body.action || '');
+      if (social && (action === 'remove-handle' || action === 'remove-photo' || action === 'remove-note')) {
+        const result = social.adminAction(email, action, body);
+        if (result.body.ok) audit(req, `social_${action.replace('-', '_')}`, { email, ...(result.audit || {}) });
+        return json(res, result.status, result.body);
+      }
       if (action === 'delete') {
         if (normalizeEmail(body.confirm) !== email) return json(res, 400, { ok: false, error: 'CONFIRM', message: 'TYPE THE EMAIL TO CONFIRM' });
         const result = await deleteCrewAccount(email);
@@ -544,16 +567,26 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
     const html = page(
       'RECKLESS ADMIN',
       `<header class="top"><span class="logo-sm">RECKLESS ADMIN</span><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${csrfFor(session)}"><button class="btn link" type="submit">[ LOG OUT ]</button></form></header>
-<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
-<main id="app"></main><script src="/admin/app.js"></script>`,
+<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="social">SOCIAL</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
+<main id="app"></main><script src="/admin/qr.js"></script><script src="/admin/app.js"></script>`,
       `<meta name="csrf-token" content="${csrfFor(session)}">`,
     );
     send(res, 200, html, { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
-  function asset(res, name, type) {
+  /** Printable A4 poster (/admin/qr/<eventId>) or the full-screen door QR (/admin/qr/<eventId>/door). */
+  function qrPage(res, session, eventId, door) {
+    const html = page(
+      door ? 'DOOR QR · RECKLESS' : 'CHECK-IN QR · RECKLESS',
+      `<main id="qr" class="${door ? 'qr-door' : 'qr-poster-page'}" data-event="${esc(eventId)}" data-kind="${door ? 'door' : 'print'}"></main><script src="/admin/qr.js"></script>`,
+      `<meta name="csrf-token" content="${csrfFor(session)}">`,
+    );
+    send(res, 200, html, { 'Content-Type': 'text/html; charset=utf-8' });
+  }
+
+  function asset(res, name, type, extra = {}) {
     try {
-      send(res, 200, readFileSync(path.join(here, 'admin', name)), { 'Content-Type': type });
+      send(res, 200, readFileSync(path.join(here, 'admin', name)), { 'Content-Type': type, ...extra });
     } catch {
       send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
     }
@@ -566,6 +599,9 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
     const run = async () => {
       if (p === '/admin/app.css' && req.method === 'GET') return asset(res, 'app.css', 'text/css; charset=utf-8');
       if (p === '/admin/app.js' && req.method === 'GET') return asset(res, 'app.js', 'text/javascript; charset=utf-8');
+      if (p === '/admin/qr.js' && req.method === 'GET') return asset(res, 'qr.js', 'text/javascript; charset=utf-8');
+      const font = p.match(/^\/admin\/fonts\/(Unbounded_900Black|DMSans_600SemiBold|DMSans_400Regular)\.woff$/);
+      if (font && req.method === 'GET') return asset(res, `fonts/${font[1]}.woff`, 'font/woff', { 'Cache-Control': 'public, max-age=604800' });
       if (p === '/admin/login') {
         if (req.method === 'POST') return handleLoginPost(req, res);
         if (req.method !== 'GET') return send(res, 405, 'Method not allowed', { 'Content-Type': 'text/plain' });
@@ -597,6 +633,8 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         return adminPage(res, session);
       }
       if (p.startsWith('/admin/api/')) return api(req, res, url, session);
+      const qrMatch = p.match(/^\/admin\/qr\/([a-z0-9_-]{1,64})(\/door)?$/i);
+      if (qrMatch && req.method === 'GET') return qrPage(res, session, qrMatch[1], Boolean(qrMatch[2]));
       return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
     };
     run().catch((error) => {

@@ -182,7 +182,7 @@
         render(j);
       });
     }
-    function action(name, label, danger, extra) {
+    function action(name, label, danger, extra, eventId) {
       var btn = h('button', { cls: 'btn' + (danger ? ' danger' : ''), type: 'button', text: label });
       var box = h('div', { cls: 'confirm', hidden: true });
       btn.addEventListener('click', function () {
@@ -201,12 +201,13 @@
         no.addEventListener('click', function () { box.hidden = true; });
         yes.addEventListener('click', function () {
           yes.disabled = true;
-          api('POST', '/crew/action', { email: lastEmail, action: name, confirm: typed ? typed.value : undefined }).then(function (j) {
+          api('POST', '/crew/action', { email: lastEmail, action: name, confirm: typed ? typed.value : undefined, eventId: eventId || undefined }).then(function (j) {
             yes.disabled = false;
             if (!j.ok) return msg(status, j.message || j.error, true);
             box.hidden = true;
             if (name === 'delete') { clear(out); return msg(status, 'ACCOUNT DELETED' + (j.ledgerKept ? ' (PURCHASE XP KEPT IN THE SHEET)' : ''), false); }
-            msg(status, name === 'unlock-pin' ? 'PIN UNLOCKED' : 'PIN REMOVED. THEY CAN SET A NEW ONE.', false);
+            var done = { 'unlock-pin': 'PIN UNLOCKED', 'reset-pin': 'PIN REMOVED. THEY CAN SET A NEW ONE.', 'remove-handle': 'HANDLE REMOVED AND BLOCKED', 'remove-photo': 'DIARY PHOTO REMOVED', 'remove-note': 'DIARY NOTE REMOVED' };
+            msg(status, done[name] || 'DONE', false);
             lookup();
           });
         });
@@ -235,12 +236,110 @@
         out.appendChild(action('reset-pin', '[ RESET PIN ]', false, 'REMOVE THE PIN FOR ' + j.email + '? THEY SET A NEW ONE NEXT TIME.'));
       }
       out.appendChild(action('delete', '[ DELETE ACCOUNT ]', true));
+      var so = j.social;
+      if (so) {
+        out.appendChild(h('h3', { text: 'SOCIAL' }));
+        var sdl = h('dl', { cls: 'kv' });
+        [
+          ['HANDLE', so.handle || 'NONE'], ['PROFILE', so.private ? 'PRIVATE' : 'VISIBLE TO CREW'],
+          ['GOING', so.going.length ? so.going.join(', ') : 'NONE'], ['RAVES', so.raves],
+          ['BADGES', so.badges.length ? so.badges.join(' · ') : 'NONE'],
+        ].forEach(function (r) { sdl.appendChild(h('dt', { text: r[0] })); sdl.appendChild(h('dd', { text: String(r[1]) })); });
+        out.appendChild(sdl);
+        if (so.handle) out.appendChild(action('remove-handle', '[ REMOVE HANDLE ]', true, 'REMOVE THE HANDLE ' + so.handle + '? IT IS BLOCKED SO NOBODY CAN TAKE IT AGAIN. THEY PICK A NEW ONE.'));
+        out.appendChild(h('h3', { text: 'RAVE DIARY' }));
+        if (!so.diary.length) out.appendChild(h('p', { cls: 'note', text: 'NO CHECK-INS YET' }));
+        so.diary.forEach(function (d) {
+          var box = h('div', { cls: 'diary' }, [
+            h('div', { cls: 'diary-head', text: (d.dateBadge ? d.dateBadge + ' · ' : '') + up(d.title) + (d.deleted ? ' (DELETED BY FAN)' : '') }),
+            h('div', { cls: 'diary-note', text: d.note ? '“' + d.note + '”' : 'NO NOTE' }),
+          ]);
+          if (d.photo) box.appendChild(h('img', { src: d.photo, alt: 'DIARY PHOTO', cls: 'diary-photo' }));
+          if (d.photo) box.appendChild(action('remove-photo', '[ REMOVE PHOTO ]', true, 'REMOVE THIS DIARY PHOTO? IT IS DELETED FROM THE SERVER.', d.eventId));
+          if (d.note) box.appendChild(action('remove-note', '[ REMOVE NOTE ]', true, 'REMOVE THIS DIARY NOTE?', d.eventId));
+          out.appendChild(box);
+        });
+      }
     }
     app.appendChild(h('h2', { text: 'CREW LOOKUP' }));
     app.appendChild(status);
     app.appendChild(form);
     app.appendChild(out);
     if (lastEmail) lookup();
+  }
+
+  /* ---------- SOCIAL ---------- */
+  function social() {
+    clear(app);
+    var status = h('p', { hidden: true });
+    var out = h('div');
+    app.appendChild(h('h2', { text: 'SOCIAL' }));
+    app.appendChild(status);
+    app.appendChild(out);
+    function load() {
+      clear(out);
+      api('GET', '/social').then(function (j) {
+        if (!j.ok) return msg(status, j.message || j.error, true);
+        var grid = h('div', { cls: 'grid' }, [
+          card(j.live ? 'ON' : 'OFF', 'SOCIAL_LIVE' + (j.live ? '' : ' · ' + j.testers + ' TESTERS')),
+          card(j.handles, 'CREW HANDLES'), card(j.checkins, 'CHECK-INS'), card(j.photos, 'DIARY PHOTOS · ' + j.photoMb + ' MB'),
+          card(j.private, 'PRIVATE PROFILES'), card(j.orders.sheetRows + j.orders.fileRows, 'SKIDDLE ORDERS LOADED'),
+        ]);
+        out.appendChild(grid);
+        var o = j.orders || {};
+        out.appendChild(h('p', { cls: 'note', text: 'SKIDDLE ORDERS: ' + (o.updatedAt ? 'LAST FEED ' + when(o.updatedAt) + (o.source ? ' · ' + up(o.source) : '') : 'NO FEED YET') + (o.unmatched && o.unmatched.length ? ' · NOT MATCHED TO AN APP EVENT: ' + o.unmatched.map(function (u) { return up(u.name); }).join(', ') : '') }));
+        out.appendChild(h('h3', { text: 'CHECK-IN QR' }));
+        out.appendChild(h('p', { cls: 'note', text: 'PRINT THE POSTER OR PUT THE DOOR SCREEN UP. FANS SCAN IT IN THE APP (OR WITH THE PHONE CAMERA) TO CHECK IN FOR +50 XP. IT ONLY WORKS FROM 1 HOUR BEFORE DOORS TO 3 HOURS AFTER CLOSE. [ NEW QR ] REPLACES THE OLD ONE. DOOR SCREEN ONLY TURNS THE PRINTED QR OFF, SO PHOTOS OF A POSTER CANNOT BE SHARED.' }));
+        if (!j.events.length) out.appendChild(h('p', { cls: 'note', text: 'NO UPCOMING EVENTS' }));
+        j.events.forEach(function (e) {
+          var make = h('button', { cls: 'btn' + (e.qr ? '' : ' primary'), type: 'button', text: e.qr ? '[ NEW QR ]' : '[ MAKE QR ]' });
+          make.addEventListener('click', function () {
+            if (e.qr && !window.confirm('MAKE A NEW QR FOR ' + up(e.title) + '? PRINTED POSTERS OF THE OLD ONE STOP WORKING.')) return;
+            make.disabled = true;
+            api('POST', '/social/qr', { eventId: e.id }).then(function (r) {
+              make.disabled = false;
+              if (!r.ok) return msg(status, r.message || r.error, true);
+              msg(status, 'QR READY FOR ' + up(e.title), false);
+              load();
+            });
+          });
+          var preview = h('div');
+          var kids = [
+            h('div', { cls: 'diary-head', text: up(e.title) + (e.subtitle ? ' · ' + up(e.subtitle) : '') }),
+            preview,
+            h('div', { cls: 'diary-note', text: 'OPEN ' + when(e.opens) + ' → ' + when(e.closes) + (e.open ? ' · OPEN NOW' : '') }),
+            h('div', { cls: 'diary-note', text: e.going + ' GOING · ' + e.verified + ' VERIFIED · ' + e.checkins + ' CHECKED IN' + (e.qr ? ' · QR MADE ' + when(e.qrAt) : '') }),
+          ];
+          if (e.qr) {
+            var dl = h('button', { cls: 'btn primary', type: 'button', text: '[ DOWNLOAD PNG ]' });
+            var pr = h('a', { cls: 'btn', href: '/admin/qr/' + encodeURIComponent(e.id) + '?print=1', target: '_blank', rel: 'noopener', text: '[ PRINT ]' });
+            var door = h('a', { cls: 'btn', href: '/admin/qr/' + encodeURIComponent(e.id) + '/door', target: '_blank', rel: 'noopener', text: '[ DOOR SCREEN ]' });
+            var mode = h('button', { cls: 'btn', type: 'button', text: e.doorOnly ? '[ PRINTED QR: OFF ]' : '[ PRINTED QR: ON ]' });
+            mode.addEventListener('click', function () {
+              mode.disabled = true;
+              api('POST', '/social/qr-mode', { eventId: e.id, doorOnly: !e.doorOnly }).then(function (r) {
+                mode.disabled = false;
+                if (!r.ok) return msg(status, r.message || r.error, true);
+                msg(status, r.doorOnly ? 'DOOR SCREEN ONLY. THE PRINTED QR NO LONGER WORKS.' : 'PRINTED QR WORKS AGAIN.', false);
+                load();
+              });
+            });
+            kids.push(h('div', { cls: 'qr-actions' }, [dl, pr, door, mode]));
+            preview.appendChild(h('div', { cls: 'diary-note', text: 'LOADING QR…' }));
+            window.RRQR.load(e.id, 'print').then(function (q) {
+              clear(preview);
+              if (!q.ok) return preview.appendChild(h('div', { cls: 'diary-note', text: q.message || q.error }));
+              dl.addEventListener('click', function () { window.RRQR.downloadPng(q); });
+              window.RRQR.posterImage(q).then(function (img) { preview.appendChild(img); });
+              if (e.doorOnly) preview.appendChild(h('div', { cls: 'diary-note', text: 'DOOR SCREEN ONLY: THIS PRINTED QR IS SWITCHED OFF.' }));
+            });
+          }
+          kids.push(make);
+          out.appendChild(h('div', { cls: 'diary' }, kids));
+        });
+      });
+    }
+    load();
   }
 
   /* ---------- STATS ---------- */
@@ -324,7 +423,7 @@
     });
   }
 
-  var views = { notify: notify, crew: crew, stats: stats, events: events, log: log };
+  var views = { notify: notify, crew: crew, social: social, stats: stats, events: events, log: log };
   var tabs = document.getElementById('tabs');
   tabs.addEventListener('click', function (e) {
     var tab = e.target.getAttribute && e.target.getAttribute('data-tab');
