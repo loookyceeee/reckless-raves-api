@@ -225,6 +225,7 @@
         ['PHONES', j.devices], ['DAY 1 CREW', j.day1 ? 'YES' : 'NO'],
         ['GAME', j.game.total + ' EVENTS · ' + j.game.countedToday + ' COUNTED TODAY'],
         ['ACCOUNT', j.hasAccount ? 'YES' : 'NO (LEDGER ONLY)'],
+        ['EVENT CHAT', j.chat ? (j.chat.banned ? 'BANNED FROM EVERY CHAT' : j.chat.muted ? 'MUTED IN EVERY CHAT' : 'CAN POST') : '—'],
       ];
       var dl = h('dl', { cls: 'kv' });
       rows.forEach(function (r) { dl.appendChild(h('dt', { text: r[0] })); dl.appendChild(h('dd', { text: String(r[1]) })); });
@@ -342,6 +343,107 @@
     load();
   }
 
+  /* ---------- CHAT ---------- */
+  function chat() {
+    clear(app);
+    var status = h('p', { hidden: true });
+    var out = h('div');
+    app.appendChild(h('h2', { text: 'EVENT CHAT' }));
+    app.appendChild(status);
+    app.appendChild(out);
+    function load() {
+      clear(out);
+      api('GET', '/chats').then(function (j) {
+        if (!j.ok) return msg(status, j.message || j.error, true);
+        out.appendChild(h('div', { cls: 'grid' }, [
+          card(j.chatLive ? 'ON' : 'OFF', 'EVENT_CHAT_LIVE'),
+          card(j.socialLive ? 'ON' : 'OFF', 'SOCIAL_LIVE'),
+          card(j.reports.length, 'REPORTS'),
+          card(j.mutes.length + j.bans.length, 'MUTED OR BANNED'),
+        ]));
+        out.appendChild(h('p', { cls: 'note', text: 'CHATS OPEN 7 DAYS BEFORE THE EVENT AND ARE DELETED 24 HOURS AFTER IT. ONLY A VERIFIED SKIDDLE TICKET FOR THAT EVENT CAN READ OR POST. [ CLOSE CHAT ] STOPS IT EARLY. MESSAGES STAY UNTIL THE 24 HOURS ARE UP, THEN THE SERVER DELETES THEM.' }));
+        out.appendChild(h('h3', { text: 'EVENTS' }));
+        if (!j.events.length) out.appendChild(h('p', { cls: 'note', text: 'NO EVENTS' }));
+        j.events.forEach(function (e) {
+          var btn = h('button', { cls: 'btn' + (e.closed ? '' : ' danger'), type: 'button', text: e.closed ? '[ REOPEN CHAT ]' : '[ CLOSE CHAT ]' });
+          btn.addEventListener('click', function () {
+            if (!e.closed && !window.confirm('CLOSE THE CHAT FOR ' + up(e.title) + '? NOBODY CAN READ OR POST UNTIL YOU REOPEN IT.')) return;
+            btn.disabled = true;
+            api('POST', '/chats/close', { eventId: e.id, closed: !e.closed }).then(function (r) {
+              btn.disabled = false;
+              if (!r.ok) return msg(status, r.message || r.error, true);
+              msg(status, r.closed ? 'CHAT CLOSED' : 'CHAT OPEN AGAIN', false);
+              load();
+            });
+          });
+          out.appendChild(h('div', { cls: 'diary' }, [
+            h('div', { cls: 'diary-head', text: up(e.title) }),
+            h('div', { cls: 'diary-note', text: up(e.status) + (e.closed ? ' · SWITCHED OFF' : '') + ' · ' + e.messages + ' MESSAGES · ' + e.reports + ' OPEN REPORTS' }),
+            h('div', { cls: 'diary-note', text: 'OPENS ' + when(e.opensAt) + ' · CLOSES ' + when(e.closesAt) }),
+            btn,
+          ]));
+        });
+        out.appendChild(h('h3', { text: 'REPORTS' }));
+        if (!j.reports.length) out.appendChild(h('p', { cls: 'note', text: 'NO REPORTS' }));
+        j.reports.forEach(function (r) {
+          var box = h('div', { cls: 'diary' }, [
+            h('div', { cls: 'diary-head', text: up(r.title) + ' · ' + (r.authorName || 'CREW') + (r.deleted ? ' · MESSAGE DELETED' : '') }),
+            h('div', { cls: 'diary-note', text: r.text || '(NO TEXT)' }),
+            h('div', { cls: 'diary-note', text: when(r.at) + ' · REPORTED BY ' + r.reporter + (r.reason ? ' · ' + r.reason : '') + ' · AUTHOR ' + r.author }),
+          ]);
+          if (!r.deleted) {
+            var del = h('button', { cls: 'btn danger', type: 'button', text: '[ DELETE MESSAGE ]' });
+            del.addEventListener('click', function () {
+              if (!window.confirm('DELETE THIS MESSAGE? IT IS REMOVED FOR EVERYONE.')) return;
+              del.disabled = true;
+              api('POST', '/chats/delete', { eventId: r.eventId, messageId: r.messageId }).then(function (res) {
+                del.disabled = false;
+                if (!res.ok) return msg(status, res.message || res.error, true);
+                msg(status, 'MESSAGE DELETED', false);
+                load();
+              });
+            });
+            box.appendChild(del);
+          }
+          var mute = h('button', { cls: 'btn', type: 'button', text: r.authorMuted ? '[ UNMUTE ]' : '[ MUTE ]' });
+          mute.addEventListener('click', function () {
+            mute.disabled = true;
+            api('POST', r.authorMuted ? '/chats/unmute' : '/chats/mute', { email: r.author }).then(function (res) {
+              mute.disabled = false;
+              if (!res.ok) return msg(status, res.message || res.error, true);
+              msg(status, res.muted ? 'MUTED IN EVERY EVENT CHAT' : 'UNMUTED', false);
+              load();
+            });
+          });
+          var ban = h('button', { cls: 'btn danger', type: 'button', text: r.authorBanned ? '[ UNBAN ]' : '[ BAN ]' });
+          ban.addEventListener('click', function () {
+            if (!r.authorBanned && !window.confirm('BAN ' + r.author + ' FROM EVERY EVENT CHAT? THEY CANNOT READ OR POST.')) return;
+            ban.disabled = true;
+            api('POST', r.authorBanned ? '/chats/unban' : '/chats/ban', { email: r.author }).then(function (res) {
+              ban.disabled = false;
+              if (!res.ok) return msg(status, res.message || res.error, true);
+              msg(status, res.banned ? 'BANNED FROM EVERY EVENT CHAT' : 'UNBANNED', false);
+              load();
+            });
+          });
+          box.appendChild(h('div', { cls: 'gap' }));
+          box.appendChild(mute);
+          box.appendChild(h('div', { cls: 'gap' }));
+          box.appendChild(ban);
+          out.appendChild(box);
+        });
+        if (j.mutes.length || j.bans.length) {
+          out.appendChild(h('h3', { text: 'MUTED AND BANNED' }));
+          var list = h('ul', { cls: 'list' });
+          j.bans.forEach(function (p) { list.appendChild(h('li', { text: 'BANNED · ' + p.email + (p.name ? ' · ' + p.name : '') })); });
+          j.mutes.forEach(function (p) { if (!p.banned) list.appendChild(h('li', { text: 'MUTED · ' + p.email + (p.name ? ' · ' + p.name : '') })); });
+          out.appendChild(list);
+        }
+      });
+    }
+    load();
+  }
+
   /* ---------- STATS ---------- */
   function stats() {
     clear(app);
@@ -423,7 +525,7 @@
     });
   }
 
-  var views = { notify: notify, crew: crew, social: social, stats: stats, events: events, log: log };
+  var views = { notify: notify, crew: crew, social: social, chat: chat, stats: stats, events: events, log: log };
   var tabs = document.getElementById('tabs');
   tabs.addEventListener('click', function (e) {
     var tab = e.target.getAttribute && e.target.getAttribute('data-tab');

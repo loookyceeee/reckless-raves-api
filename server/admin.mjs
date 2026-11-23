@@ -83,6 +83,7 @@ export function createAdmin(deps) {
     exportEventsSince,
     downloadsSummary,
     social,
+    eventChat,
   } = deps;
 
   const auditPath = path.join(dataDir, 'admin-audit.jsonl');
@@ -379,6 +380,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         GAME_XP_LIVE: flagOn('GAME_XP_LIVE'),
         CREW_CODES_LIVE: flagOn('CREW_CODES_LIVE'),
         SOCIAL_LIVE: flagOn('SOCIAL_LIVE'),
+        EVENT_CHAT_LIVE: flagOn('EVENT_CHAT_LIVE'),
         CREW_RESET_ID: Boolean(String(process.env.CREW_RESET_ID || '').trim()),
       },
       downloads: { ios: downloadsSummary(), android: { connected: false, devices: deviceStats().android } },
@@ -426,6 +428,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       devices,
       game: { total: mine.length, countedToday: mine.filter((event) => event.counted && londonDay(Date.parse(event.at)) === today).length },
       social: social ? social.adminLookup(email) : null,
+      chat: eventChat ? eventChat.adminMember(email) : null,
     };
   }
 
@@ -450,6 +453,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         return send(res, 200, `${rows.join('\n')}\n`, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="game-events-${londonDay(Date.now())}.csv"` });
       }
       if (route === '/social' && social) return json(res, 200, { ok: true, ...social.adminSummary(contentEvents()) });
+      if (route === '/chats' && eventChat) return json(res, 200, { ok: true, ...eventChat.adminSummary() });
       if (route === '/social/qr' && social) {
         const result = social.adminQr(String(url.searchParams.get('eventId') || ''), url.searchParams.get('kind') === 'door' ? 'door' : 'print', req);
         return json(res, result.status, result.body, { 'Cache-Control': 'no-store' });
@@ -513,6 +517,22 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
       console.log(`Admin page push (${kind}): ${result.dryRun ? 'dry run' : 'sent'} ${result.sent}/${result.count}`);
       return json(res, 200, { ok: true, ...row });
     }
+    if (route === '/chats/delete' && eventChat) {
+      const result = eventChat.adminAction('delete', body);
+      if (result.body.ok) audit(req, 'chat_delete', result.audit || {});
+      return json(res, result.status, result.body);
+    }
+    if ((route === '/chats/mute' || route === '/chats/unmute' || route === '/chats/ban' || route === '/chats/unban') && eventChat) {
+      const action = route.slice('/chats/'.length);
+      const result = eventChat.adminAction(action, body);
+      if (result.body.ok) audit(req, `chat_${action}`, result.audit || {});
+      return json(res, result.status, result.body);
+    }
+    if (route === '/chats/close' && eventChat) {
+      const result = eventChat.adminAction('close', body);
+      if (result.body.ok) audit(req, 'chat_close', result.audit || {});
+      return json(res, result.status, result.body);
+    }
     if (route === '/social/qr' && social) {
       const result = social.adminNewQr(String(body.eventId || ''));
       if (result.body.ok) audit(req, 'social_checkin_qr', { eventId: result.body.eventId });
@@ -567,7 +587,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
     const html = page(
       'RECKLESS ADMIN',
       `<header class="top"><span class="logo-sm">RECKLESS ADMIN</span><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${csrfFor(session)}"><button class="btn link" type="submit">[ LOG OUT ]</button></form></header>
-<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="social">SOCIAL</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
+<nav class="tabs" id="tabs"><button data-tab="notify" class="on">NOTIFY</button><button data-tab="crew">CREW</button><button data-tab="social">SOCIAL</button><button data-tab="chat">CHAT</button><button data-tab="stats">STATS</button><button data-tab="events">GAME</button><button data-tab="log">LOG</button></nav>
 <main id="app"></main><script src="/admin/qr.js"></script><script src="/admin/app.js"></script>`,
       `<meta name="csrf-token" content="${csrfFor(session)}">`,
     );

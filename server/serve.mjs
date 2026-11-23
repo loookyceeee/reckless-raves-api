@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { contentEventById, contentEventIndex, contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
 import { createReps } from './reps.mjs';
 import { createSocial } from './social.mjs';
+import { createEventChat } from './event-chat.mjs';
 import { createAdmin } from './admin.mjs';
 import { downloadsSummary, initDownloads } from './downloads.mjs';
 import { attachCors } from './cors.mjs';
@@ -1134,6 +1135,7 @@ function deleteCrewAccount(email) {
   saveAccounts();
   forgetCodes(email);
   social.forget(email);
+  eventChat.forget(email);
   forgetDevices(email);
   revoked[email] = Date.now();
   mkdirSync(path.dirname(revokedPath), { recursive: true });
@@ -1808,6 +1810,19 @@ const social = createSocial({
   checkinBase: (req) => (process.env.CHECKIN_LINK_BASE || '').trim().replace(/\/$/, '') || (req ? publicOrigin(req) : ''),
 });
 
+const eventChat = createEventChat({
+  dataDir,
+  readSession,
+  normalizeEmail,
+  validEmail,
+  rateLimited,
+  sendJson,
+  contentEventById,
+  contentEvents,
+  chatMember: (email) => social.chatMember(email),
+  hasVerifiedTicket: (email, skiddleId) => social.hasVerifiedTicket(email, skiddleId),
+});
+
 const reps = createReps({
   dataDir,
   adminKeyOk,
@@ -1846,6 +1861,7 @@ const handleAdmin = createAdmin({
   exportEventsSince,
   downloadsSummary,
   social,
+  eventChat,
 });
 
 const server = createServer((req, res) => {
@@ -1855,6 +1871,7 @@ const server = createServer((req, res) => {
   if (handleAdmin(req, res, url)) return;
   attachCors(res);
   if (social.handle(req, res, url)) return;
+  if (eventChat.handle(req, res, url)) return;
   if (reps.handle(req, res, url)) return;
   if (wheelApiPaths.has(url.pathname)) {
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'HEAD') {
@@ -2110,6 +2127,7 @@ const server = createServer((req, res) => {
 launchReset();
 loadLedgerFile();
 initContent(dataDir);
+eventChat.sweep();
 initCrew(dataDir);
 initGameEvents(dataDir);
 initPush(dataDir);

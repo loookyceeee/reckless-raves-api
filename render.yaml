@@ -44,6 +44,9 @@ services:
         sync: false
       - key: SOCIAL_TEST_EMAILS
         sync: false
+      # Per-event group chats. Unset or 0 = off. Also needs SOCIAL_LIVE=1.
+      - key: EVENT_CHAT_LIVE
+        sync: false
       # Check-in QR links. Unset = the QR points at this service's own host (onrender.com).
       # A custom domain here also needs the app's associatedDomains / intent filter updated and a new build.
       - key: CHECKIN_LINK_BASE
