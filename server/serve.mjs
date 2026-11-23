@@ -1813,6 +1813,8 @@ const reps = createReps({
   adminKeyOk,
   sendJson,
   contentEventIndex,
+  readSession,
+  rateLimited,
 });
 
 const handleAdmin = createAdmin({
