@@ -105,6 +105,41 @@ Everything counts from go-live, **21 Nov 2026**: nothing is backfilled from earl
   REMOVE PHOTO / REMOVE NOTE. Deleting an account removes its social data and photos.
 - Checks: `node scripts/social-check.mjs`.
 
+## Event chats (dormant until `SOCIAL_LIVE=1` and `EVENT_CHAT_LIVE=1`)
+
+Temporary group chat per event (`server/event-chat.mjs`). `EVENT_CHAT_LIVE` is off by default. Every chat route also needs `SOCIAL_LIVE`; otherwise `403 SOCIAL_OFF`. With social on and the chat flag off: `403 CHAT_OFF`. Nothing is posted while either flag is off. Auth is the crew session bearer. A missing session is `401 SESSION`.
+
+The room opens **7 days before the event start** and is **hard-deleted 24 hours after the event**. The 24 hours are counted from the content end time when the event has one that is not before the start, otherwise from the start. A sweeper unlinks `DATA_DIR/chats/events/<eventId>.json` at that time. It runs on boot, every 5 minutes, and before each chat request. Deleting the file removes the messages and the reports of them. While the flags are on, the sweeper stores each event's window and Skiddle id on that file, so the chat keeps working for the 24 hours after the event even when the event has dropped off `/api/content`.
+
+Only a **VERIFIED** Skiddle ticket for that event can read or post. That is the same match as the GOING tick: XP Sheet tab Tickets, `DATA_DIR/skiddle-orders.json`, and legacy `orders` in that file, keyed by Skiddle event id.
+
+- `GET /api/events/:id/chat` → `200 { ok, eventId, status, opensAt, closesAt, canJoin, canRead, canPost, reason, closed }`.
+  `status` is `upcoming`, `open`, or `closed` (the room). `reason` is why this fan cannot fully join: `NOT_OPEN`, `CLOSED`, `NOT_VERIFIED`, `MUTED`, `BANNED`, or `null`.
+  `canJoin` is true only when they can read and post. A muted fan has `canRead: true`, `canPost: false`, `reason: "MUTED"`. `closed: true` means the admin switch is on (the messages stay until the 24 hours run out).
+  Unknown event: `404 EVENT`.
+- `GET /api/events/:id/chat/messages?after=` → `200 { ok, eventId, messages, more }`. Poll this. No websockets.
+  Each message is `{ id, userId, name, crew, level, avatarBase, fit, text, createdAt, you }`.
+  `name` is the crew handle, or the first name and last initial when they have no handle (`"Alex Morgan"` → `"ALEX M"`), or `"CREW"`.
+  `crew` and `level` are the loyalty standing. `avatarBase` (`"male"` | `"female"`) and `fit` (`{ top, outer, legs }`) are included when the account has them.
+  `userId` is 16 hex chars (`sha256` of the normalised email). It is stable and is what block uses. Emails are never in the payload.
+  No `after`: the latest 200, oldest first. `after` is a message `id` (messages strictly after it, up to 200) or an ISO time (`createdAt` strictly greater). `more: true` means call again with the last id. Unknown `after`: `400 AFTER`.
+  Someone who cannot read gets `403` with the same `reason` as the status call. Messages from users this fan has blocked are left out.
+- `POST /api/events/:id/chat/messages { "text" }` → `200 { ok, filtered, message }`. `filtered` is true when the stored text is not the text they sent.
+  Max 500 characters (`400 TEXT_TOO_LONG`). Empty: `400 TEXT`. Hard slurs are refused and not stored (`400 SLUR`). Other profanity is masked with asterisks. Links are removed unless the host is `skiddle.com` or `recklessraves.co.uk` (including subdomains). `data:image`, `<img>` and markdown images are `400 NO_IMAGES`, and so is a body that includes `image`, `photo`, `media`, `attachment` or `file`.
+  10 accepted messages per minute per fan (`429 RATE`). The counter is in memory, same as the other limits, so a restart clears it. There is no image upload.
+- `POST /api/events/:id/chat/messages/:messageId/report { "reason"? }` → `200 { ok, reported: true }`. A second report from the same fan is `{ already: true }`. Reporting your own message is `400 OWN`. Unknown message: `404 NOT_FOUND`. `reason` is optional, max 200 characters.
+- `POST /api/events/:id/chat/block { "userId" }` and `POST /api/events/:id/chat/unblock { "userId" }` → `200 { ok, blocked, userId }`.
+  The block applies in every event chat, for this fan only. Unknown id: `404 USER`. Blocking yourself: `400 SELF`.
+
+Admin (the existing `/admin` session, CHAT tab):
+
+- `GET /admin/api/chats` lists events (status, window, message count, report count, close switch), the latest reports (text, reporter, author) and who is muted or banned.
+- `POST /admin/api/chats/delete { eventId, messageId }` removes one message for everyone.
+- `POST /admin/api/chats/mute` and `/unmute`, `/ban` and `/unban`, each `{ email }`. Mute: cannot post, can still read. Ban: cannot read or post. Both apply to every event chat.
+- `POST /admin/api/chats/close { eventId, closed }` is the per-event switch. `closed: true` stops read and post until it is turned back on. It does not delete the messages; the sweeper still does that at `closesAt`.
+- Crew lookup shows MUTED or BANNED. Deleting an account removes that fan's messages from every chat.
+- Checks: `node scripts/event-chat-check.mjs`.
+
 ## Account PIN (opt-in, dormant until `PIN_SETUP_LIVE=1`)
 
 - Stored per email on the account row in `/data/accounts.json` as `pinHash` (`scrypt$<salt>$<hash>`, 16-byte random salt, N=16384). The PIN is never stored, logged or returned. Only accounts with a PIN are affected; everything else (including `appreview@recklessraves.co.uk`) is email-only as before.
@@ -127,7 +162,8 @@ Private, mobile-first page for Luke (black and white, ALL CAPS). `/admin` redire
 - **Headers:** `Cache-Control: no-store`, `X-Robots-Tag: noindex`, CSP `script-src 'self'`, `X-Frame-Options: DENY`, and no public CORS headers. No secret (`OAUTH_ADMIN_KEY`, Expo/Apple keys) is sent to the browser; the page calls the server internals directly.
 - **NOTIFY:** title (60) + message (180), live counters and ALL CAPS preview, optional tap target (`data.path`: `/`, `/events`, `/event/<id>` from the cached events, `/shop`, `/crew`, `/music` = RECORDS, `/gallery`). `[ CHECK ]` = dry run with the phone count; `[ SEND TO N PHONES ]` asks to confirm and is refused (`409`) if the count changed. Same rule as `/api/push/send`: fans are only reached when `PUSH_LIVE=1`, otherwise it is a dry run. `[ TEST TO MY PHONE ]` sends to one email's phones (max 3, default `loookyceeee@gmail.com`), also while `PUSH_LIVE` is off. Every send/test is kept in `/data/push-history.jsonl` (time, title, body, path, sent/count, errors; no tokens).
 - **CREW:** lookup by email (read-only; never creates an account or issues a code): XP, level, crew, avatar base, PIN set/locked, crew codes issued, owned merch, phones, game events. Actions with a confirm step: `[ UNLOCK PIN ]` (clears the lockout), `[ RESET PIN ]` (removes the PIN), `[ DELETE ACCOUNT ]` (type the email; same deletion as `DELETE /api/crew`).
-- **STATS:** crew accounts, accounts with a PIN, pins locked, phones with notifications (iOS/Android/unknown, signed in), game events recorded/counted today (London day), and read-only flags (`PUSH_LIVE`, `PIN_SETUP_LIVE`, `GAME_XP_LIVE`, `CREW_CODES_LIVE`, `CREW_RESET_ID` set or not). No toggles.
+- **STATS:** crew accounts, accounts with a PIN, pins locked, phones with notifications (iOS/Android/unknown, signed in), game events recorded/counted today (London day), and read-only flags (`PUSH_LIVE`, `PIN_SETUP_LIVE`, `GAME_XP_LIVE`, `CREW_CODES_LIVE`, `SOCIAL_LIVE`, `EVENT_CHAT_LIVE`, `CREW_RESET_ID` set or not). No toggles.
+- **CHAT:** event chats. Reports (delete the message, mute or ban the author from every event chat) and a per-event close switch. Messages are deleted from disk 24 hours after the event.
 - **DOWNLOADS:** iOS first-time downloads (product types 1/1F/1T/F1…; updates 7/7F and re-downloads 3/3F counted separately) from the App Store Connect Sales and Trends API (`/v1/salesReports`, SALES/SUMMARY/DAILY), refreshed every 6 hours and cached per day in `/data/asc-downloads.json`: total since `ASC_SALES_FROM` (default 2026-11-20), last 7 days, yesterday. Apple's data is about a day behind. Env: `ASC_KEY_P8` (base64 of the .p8), `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_VENDOR_NUMBER` (App Store Connect > Payments and Financial Reports), optional `ASC_APP_ID` (default 6834422153). Android shows CONNECT PLAY REPORTING plus the Android notification-device count as a labelled lower bound until Play reporting is connected.
 - **GAME:** latest 50 RECKLESS WORLD events (type, masked email, time, counted, reason, test) and `[ DOWNLOAD CSV ]` (all events, masked emails).
 - **LOG:** every admin action (login, failed login, lookups, sends, PIN actions, deletes, CSRF rejections) goes to `/data/admin-audit.jsonl` without secrets; the last 20 are shown.
@@ -141,4 +177,4 @@ Private, mobile-first page for Luke (black and white, ALL CAPS). `/admin` redire
 
 Admin page: `ADMIN_PASSWORD` (unset = admin off), `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_VENDOR_NUMBER`, optional `ASC_APP_ID`, `ASC_SALES_FROM`.
 
-`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off), `GAME_XP_LIVE` (default off; RECKLESS WORLD events stay `test: true` and do not enter the XP ledger) and `CREW_RESET_ID`. Never commit values.
+`AUTH_SECRET` (required, signs sessions), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Drive + Sheets), `GOOGLE_DRIVE_FOLDER_ID`, `XP_SHEET_ID`, `SKIDDLE_API_KEY`, `OAUTH_ADMIN_KEY`, `OAUTH_REDIRECT_URI`, optional `BEHOLD_FEED_URL` (Instagram follower count; leave unset until the website supplies a Behold JSON feed URL), `CREW_CODES` (pool import), `CREW_CODES_LOADED`, `CREW_CODES_LIVE` (default off), `PIN_SETUP_LIVE` (default off), `GAME_XP_LIVE` (default off; RECKLESS WORLD events stay `test: true` and do not enter the XP ledger), `SOCIAL_LIVE` (default off), `EVENT_CHAT_LIVE` (default off; event chats also need `SOCIAL_LIVE`) and `CREW_RESET_ID`. Never commit values.

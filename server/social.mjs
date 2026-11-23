@@ -1247,5 +1247,33 @@ p{color:#aaa;font-size:14px;line-height:1.5;margin:12px auto;max-width:340px}a.b
     };
   }
 
-  return { handle, forget, adminLookup, adminAction, adminSummary, adminNewQr, adminQrMode, adminQr, setTicketOrders, ingestSkiddleOrders, exportSince, socialLive, _state: () => state };
+  function personalName(email) {
+    const account = existingAccount(email);
+    if (!account) return '';
+    if (typeof account.name === 'string' && account.name.trim()) return account.name.trim().slice(0, 80);
+    const first = typeof account.firstName === 'string' ? account.firstName.trim() : '';
+    const last = typeof account.lastName === 'string' ? account.lastName.trim() : '';
+    return [first, last].filter(Boolean).join(' ').slice(0, 80);
+  }
+  /** Public identity for event chat: crew handle, personal name, crew level, avatar. No email. */
+  function chatMember(email) {
+    const profile = profileOf(email);
+    const account = existingAccount(email);
+    const info = crewInfo(email);
+    const look = account ? lookOf(email) : { avatarBase: null, fit: null };
+    return {
+      handle: profile?.handle || null,
+      personalName: personalName(email),
+      crew: info.crewName,
+      level: info.level,
+      avatarBase: look.avatarBase,
+      fit: look.fit,
+    };
+  }
+  /** VERIFIED Skiddle order for this Skiddle event id (sheet tab + orders file). */
+  function hasVerifiedTicket(email, skiddleId) {
+    return hasTicket(email, skiddleId);
+  }
+
+  return { handle, forget, adminLookup, adminAction, adminSummary, adminNewQr, adminQrMode, adminQr, setTicketOrders, ingestSkiddleOrders, exportSince, socialLive, chatMember, hasVerifiedTicket, _state: () => state };
 }
