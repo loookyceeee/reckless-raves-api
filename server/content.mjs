@@ -612,6 +612,13 @@ export function contentEventById(id) {
   return (state.events || []).find((event) => event.id === id) || null;
 }
 
+/** App id + Skiddle id for every cached event. The rep feed resolves a push against this list. */
+export function contentEventIndex() {
+  return (state.events || [])
+    .filter((event) => event && event.id && event.skiddleId)
+    .map((event) => ({ id: String(event.id), skiddleId: String(event.skiddleId) }));
+}
+
 export function refreshContent() {
   if (!dataDir) return Promise.resolve();
   if (refreshing) return refreshing;

@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { contentEventById, contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
+import { contentEventById, contentEventIndex, contentEvents, handleContent, handlePoster, initContent } from './content.mjs';
+import { createReps } from './reps.mjs';
 import { createSocial } from './social.mjs';
 import { createAdmin } from './admin.mjs';
 import { downloadsSummary, initDownloads } from './downloads.mjs';
@@ -1807,6 +1808,13 @@ const social = createSocial({
   checkinBase: (req) => (process.env.CHECKIN_LINK_BASE || '').trim().replace(/\/$/, '') || (req ? publicOrigin(req) : ''),
 });
 
+const reps = createReps({
+  dataDir,
+  adminKeyOk,
+  sendJson,
+  contentEventIndex,
+});
+
 const handleAdmin = createAdmin({
   dataDir,
   authSecret,
@@ -1845,6 +1853,7 @@ const server = createServer((req, res) => {
   if (handleAdmin(req, res, url)) return;
   attachCors(res);
   if (social.handle(req, res, url)) return;
+  if (reps.handle(req, res, url)) return;
   if (wheelApiPaths.has(url.pathname)) {
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'HEAD') {
       sendJson(res, 405, { ok: false, error: 'UPLOAD' });
