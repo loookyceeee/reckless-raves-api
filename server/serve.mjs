@@ -14,6 +14,7 @@ import { downloadsSummary, initDownloads } from './downloads.mjs';
 import { attachCors } from './cors.mjs';
 import { avatarManifest, handleAvatarAsset } from './avatar.mjs';
 import { checkLevelUps, deviceStats, devicesForEmail, forgetDevices, initPush, pushLive, pushStatus, registerDevice, sendPush, targetTokens, unregisterDevice, validPushToken } from './push.mjs';
+import { createPushSchedule } from './push-schedule.mjs';
 import { acknowledge, explicitAvatarBase, issuedCodesFor, storedAvatarBase, codePoolStatus, crewConfig, standing, fillPending, setLoadedSheet, crewState, flushIssued, forgetCodes, initCrew, issuedQueueLength, ownedFor, setIssuedWriter, setOwnedSheet, touchDay1, validAvatarBase, validFit } from './crew.mjs';
 import { eventsForEmail, exportEventsSince, finishRave, initGameEvents, postPoster, startRave } from './game-events.mjs';
 import { gameXp } from './game-xp.mjs';
@@ -1832,6 +1833,8 @@ const reps = createReps({
   rateLimited,
 });
 
+const pushSchedule = createPushSchedule({ dataDir, sendPush, targetTokens, pushLive });
+
 const handleAdmin = createAdmin({
   dataDir,
   authSecret,
@@ -1862,6 +1865,7 @@ const handleAdmin = createAdmin({
   downloadsSummary,
   social,
   eventChat,
+  pushSchedule,
 });
 
 const server = createServer((req, res) => {
@@ -2131,6 +2135,7 @@ eventChat.sweep();
 initCrew(dataDir);
 initGameEvents(dataDir);
 initPush(dataDir);
+pushSchedule.start();
 initDownloads(dataDir);
 fillPending();
 setInterval(() => void runLevelUpPushes(), 10 * 60 * 1000).unref?.();

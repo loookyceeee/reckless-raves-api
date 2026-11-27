@@ -133,9 +133,148 @@
         j.history.forEach(function (row) {
           history.appendChild(h('li', {}, [
             h('div', { text: row.title }), h('div', { text: row.body }),
-            h('div', { cls: 'meta', text: when(row.at) + ' · ' + (row.kind === 'test' ? 'TEST' : 'ALL') + ' · ' + (row.dryRun ? 'DRY RUN ' : 'SENT ') + row.sent + '/' + row.count + (row.path ? ' · ' + row.path : '') + (row.errors && row.errors.length ? ' · ERRORS ' + row.errors.length : '') }),
+            h('div', { cls: 'meta', text: when(row.at) + ' · ' + (row.kind === 'test' ? 'TEST' : row.kind === 'schedule' ? 'SCHEDULED' : 'ALL') + ' · ' + (row.dryRun ? 'DRY RUN ' : 'SENT ') + row.sent + '/' + row.count + (row.path ? ' · ' + row.path : '') + (row.errors && row.errors.length ? ' · ERRORS ' + row.errors.length : '') }),
           ]));
         });
+      });
+    }
+
+    var sStatus = h('p', { hidden: true });
+    var sTitle = h('input', { id: 'st', maxlength: '60', placeholder: 'ONE WEEK UNTIL GEARBOX.', autocomplete: 'off' });
+    var sBody = h('textarea', { id: 'sb', maxlength: '180', placeholder: 'MESSAGE', autocomplete: 'off' });
+    var sTc = h('span', { cls: 'count' });
+    var sBc = h('span', { cls: 'count' });
+    var sSelect = h('select', { id: 'sp' });
+    var sAudience = h('select', { id: 'sa' });
+    var sDate = h('input', { id: 'sd', type: 'date' });
+    var sTime = h('input', { id: 'stm', type: 'time', step: '60' });
+    var sPreview = { t: h('div', { cls: 't' }), b: h('div', { cls: 'b' }), p: h('div', { cls: 'p' }) };
+    var sBtn = h('button', { cls: 'btn primary', type: 'button', text: '[ SCHEDULE ]' });
+    var sCancelEdit = h('button', { cls: 'btn', type: 'button', text: '[ CANCEL EDIT ]', hidden: true });
+    var sEditing = h('p', { cls: 'hint', hidden: true, text: 'EDITING A PENDING NOTIFICATION.' });
+    var upcoming = h('div');
+    var recent = h('div');
+    var editingId = null;
+    var audienceChoices = [
+      { id: 'all', label: 'ALL PHONES' },
+      { id: 'drops', label: 'DROPS' },
+      { id: 'events', label: 'EVENTS' },
+      { id: 'crew', label: 'CREW' },
+    ];
+    var audienceLabel = { all: 'ALL PHONES', drops: 'DROPS', events: 'EVENTS', crew: 'CREW' };
+    function fillAudiences(list) {
+      var current = sAudience.value || 'all';
+      clear(sAudience);
+      (list || []).forEach(function (a) { sAudience.appendChild(h('option', { value: a.id, text: a.label })); });
+      if (current) sAudience.value = current;
+    }
+    fillAudiences(audienceChoices);
+
+    function sRefresh() {
+      sTc.textContent = sTitle.value.length + '/60';
+      sBc.textContent = sBody.value.length + '/180';
+      sPreview.t.textContent = up(sTitle.value.trim()) || 'TITLE';
+      sPreview.b.textContent = up(sBody.value.trim()) || 'MESSAGE';
+      var who = (sAudience.options[sAudience.selectedIndex] || {}).text || 'ALL PHONES';
+      var tap = sSelect.value ? (sSelect.options[sSelect.selectedIndex] || {}).text : 'THE APP';
+      sPreview.p.textContent = who + ' · TAP OPENS: ' + tap;
+    }
+    [sTitle, sBody, sSelect, sAudience, sDate, sTime].forEach(function (el) {
+      el.addEventListener('input', sRefresh);
+      el.addEventListener('change', sRefresh);
+    });
+    function sPayload() {
+      return { title: sTitle.value, body: sBody.value, path: sSelect.value, audience: sAudience.value, date: sDate.value, time: sTime.value };
+    }
+    function clearEdit() {
+      editingId = null;
+      sBtn.textContent = '[ SCHEDULE ]';
+      sCancelEdit.hidden = true;
+      sEditing.hidden = true;
+    }
+    sCancelEdit.addEventListener('click', function () { clearEdit(); msg(sStatus, ''); });
+    sBtn.addEventListener('click', function () {
+      if (!sTitle.value.trim() || !sBody.value.trim()) return msg(sStatus, 'ADD A TITLE AND A MESSAGE', true);
+      if (!sDate.value || !sTime.value) return msg(sStatus, 'ENTER A DATE AND TIME', true);
+      sBtn.disabled = true;
+      var body = sPayload();
+      var method = 'POST';
+      if (editingId) { body.id = editingId; method = 'PATCH'; }
+      api(method, '/push/schedule', body).then(function (j) {
+        sBtn.disabled = false;
+        if (!j.ok) return msg(sStatus, j.message || j.error, true);
+        msg(sStatus, editingId ? 'SAVED.' : 'SCHEDULED.', false);
+        clearEdit();
+        loadSchedule();
+      }).catch(function (e) { sBtn.disabled = false; msg(sStatus, e.message, true); });
+    });
+    function statusText(item) {
+      if (item.status === 'sent') return (item.dryRun ? 'DRY RUN ' : 'SENT ') + (item.sent == null ? '' : item.sent + '/' + item.count);
+      var names = { pending: 'PENDING', sending: 'SENDING', failed: 'FAILED', missed: 'MISSED', cancelled: 'CANCELLED' };
+      return (names[item.status] || up(item.status)) + (item.error ? ' · ' + item.error : '');
+    }
+    function scheduleRow(item) {
+      var box = h('div', { cls: 'diary' }, [
+        h('div', { cls: 'diary-head', text: item.title }),
+        h('div', { cls: 'diary-note', text: item.body }),
+        h('div', { cls: 'diary-note', text: when(item.at) + ' · ' + (audienceLabel[item.audience] || up(item.audience)) + ' · ' + statusText(item) + (item.path ? ' · ' + item.path : '') }),
+      ]);
+      if (item.status === 'pending') {
+        var edit = h('button', { cls: 'btn', type: 'button', text: '[ EDIT ]' });
+        var cancel = h('button', { cls: 'btn danger', type: 'button', text: '[ CANCEL ]' });
+        var confirm = h('div', { cls: 'confirm', hidden: true });
+        edit.addEventListener('click', function () {
+          editingId = item.id;
+          sTitle.value = item.title || '';
+          sBody.value = item.body || '';
+          sSelect.value = item.path || '';
+          sAudience.value = item.audience || 'all';
+          sDate.value = item.london ? item.london.slice(0, 10) : '';
+          sTime.value = item.london ? item.london.slice(11, 16) : '';
+          sBtn.textContent = '[ SAVE ]';
+          sCancelEdit.hidden = false;
+          sEditing.hidden = false;
+          sRefresh();
+          sTitle.scrollIntoView({ block: 'center' });
+        });
+        cancel.addEventListener('click', function () {
+          clear(confirm);
+          confirm.hidden = false;
+          confirm.appendChild(h('p', { text: 'CANCEL "' + item.title + '"? IT WILL NOT BE SENT.' }));
+          var yes = h('button', { cls: 'btn primary', type: 'button', text: '[ YES, CANCEL ]' });
+          var no = h('button', { cls: 'btn', type: 'button', text: '[ KEEP IT ]' });
+          confirm.appendChild(yes);
+          confirm.appendChild(h('div', { cls: 'gap' }));
+          confirm.appendChild(no);
+          no.addEventListener('click', function () { confirm.hidden = true; });
+          yes.addEventListener('click', function () {
+            yes.disabled = true;
+            no.disabled = true;
+            api('DELETE', '/push/schedule', { id: item.id }).then(function (j) {
+              if (!j.ok) { yes.disabled = false; no.disabled = false; return msg(sStatus, j.message || j.error, true); }
+              if (editingId === item.id) clearEdit();
+              msg(sStatus, 'CANCELLED.', false);
+              loadSchedule();
+            }).catch(function (e) { msg(sStatus, e.message, true); });
+          });
+        });
+        box.appendChild(h('div', { cls: 'actions' }, [edit, cancel]));
+        box.appendChild(confirm);
+      }
+      return box;
+    }
+    function loadSchedule() {
+      api('GET', '/push/schedule').then(function (j) {
+        clear(upcoming);
+        clear(recent);
+        if (!j.ok) return;
+        var items = j.items || [];
+        var soon = items.filter(function (item) { return item.status === 'pending' || item.status === 'sending'; });
+        var done = items.filter(function (item) { return item.status !== 'pending' && item.status !== 'sending'; });
+        if (!soon.length) upcoming.appendChild(h('p', { cls: 'note', text: 'NOTHING SCHEDULED' }));
+        soon.forEach(function (item) { upcoming.appendChild(scheduleRow(item)); });
+        if (!done.length) recent.appendChild(h('p', { cls: 'note', text: 'NOTHING SENT FROM THE SCHEDULE YET' }));
+        done.forEach(function (item) { recent.appendChild(scheduleRow(item)); });
       });
     }
 
@@ -149,16 +288,41 @@
       checkBtn, sendBtn, confirmBox,
       h('h3', { text: 'TEST FIRST' }), testEmail, testBtn,
       h('p', { cls: 'hint', text: 'SENDS ONLY TO PHONES SIGNED IN WITH THIS EMAIL (MAX 3).' }),
+      h('h3', { text: 'SCHEDULE' }),
+      sEditing, sStatus,
+      h('div', { cls: 'row' }, [h('label', { 'for': 'st', text: 'TITLE' }), sTc]), sTitle,
+      h('div', { cls: 'row' }, [h('label', { 'for': 'sb', text: 'MESSAGE' }), sBc]), sBody,
+      h('label', { 'for': 'sp', text: 'TAP OPENS' }), sSelect,
+      h('label', { 'for': 'sa', text: 'AUDIENCE' }), sAudience,
+      h('div', { cls: 'pair' }, [
+        h('div', {}, [h('label', { 'for': 'sd', text: 'DATE (UK)' }), sDate]),
+        h('div', {}, [h('label', { 'for': 'stm', text: 'TIME (UK)' }), sTime]),
+      ]),
+      h('label', { text: 'PREVIEW' }),
+      h('div', { cls: 'preview' }, [h('div', { cls: 'app', text: 'RECKLESS RAVES · SCHEDULED' }), sPreview.t, sPreview.b, sPreview.p]),
+      sBtn, sCancelEdit,
+      h('p', { cls: 'hint', text: 'DATE AND TIME ARE EUROPE/LONDON. A SEND MORE THAN 6 HOURS LATE IS MARKED MISSED AND IS NOT SENT.' }),
     ]));
+    app.appendChild(h('h3', { text: 'UPCOMING' }));
+    app.appendChild(upcoming);
+    app.appendChild(h('h3', { text: 'RECENT' }));
+    app.appendChild(recent);
     app.appendChild(h('h3', { text: 'SENT HISTORY' }));
     app.appendChild(history);
     api('GET', '/push/targets').then(function (j) {
-      (j.targets || []).forEach(function (t) { select.appendChild(h('option', { value: t.path, text: t.label })); });
+      (j.targets || []).forEach(function (t) {
+        select.appendChild(h('option', { value: t.path, text: t.label }));
+        sSelect.appendChild(h('option', { value: t.path, text: t.label }));
+      });
+      if (j.audiences && j.audiences.length) fillAudiences(j.audiences);
       select.value = draft.path;
       refresh();
+      sRefresh();
     });
     refresh();
+    sRefresh();
     loadHistory();
+    loadSchedule();
   }
 
   /* ---------- CREW ---------- */

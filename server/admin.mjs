@@ -7,6 +7,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { AUDIENCES, londonWallToInstant, validAudience } from './push-schedule.mjs';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const COOKIE = '__Host-rr_admin';
 const PRE_COOKIE = '__Host-rr_admin_pre';
@@ -84,6 +86,7 @@ export function createAdmin(deps) {
     downloadsSummary,
     social,
     eventChat,
+    pushSchedule,
   } = deps;
 
   const auditPath = path.join(dataDir, 'admin-audit.jsonl');
@@ -347,6 +350,66 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
     return { title, text, path: tapPath || null, data };
   }
 
+  function scheduleInput(body) {
+    const msg = message(body);
+    if (msg.error) return { error: msg.error, message: msg.text };
+    const audience = String(body?.audience ?? 'all').trim().toLowerCase();
+    if (!validAudience(audience)) return { error: 'AUDIENCE', message: 'UNKNOWN AUDIENCE' };
+    let date = String(body?.date || '').trim();
+    let time = String(body?.time || '').trim();
+    if ((!date || !time) && body?.when) {
+      const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2})?)$/.exec(String(body.when).trim());
+      if (!match) return { error: 'WHEN', message: 'ENTER A DATE AND TIME' };
+      date = match[1];
+      time = match[2];
+    }
+    const when = londonWallToInstant(date, time);
+    if (when.error) return { error: when.error, message: when.message };
+    if (Date.parse(when.at) <= Date.now()) return { error: 'PAST', message: 'PICK A FUTURE TIME (UK)' };
+    return { title: msg.title, text: msg.text, path: msg.path, audience, at: when.at, london: when.london };
+  }
+
+  async function scheduleHttp(req, res, url, session) {
+    if (!pushSchedule) return json(res, 500, { ok: false, error: 'SERVER' });
+    if (req.method === 'GET') return json(res, 200, { ok: true, items: pushSchedule.list(), audiences: AUDIENCES });
+    if (req.method !== 'POST' && req.method !== 'PATCH' && req.method !== 'DELETE') return json(res, 405, { ok: false, error: 'METHOD' });
+    if (!sameOrigin(req) || !tokenOk(req.headers['x-csrf-token'], csrfFor(session))) {
+      audit(req, 'csrf_rejected', { route: '/push/schedule' });
+      return json(res, 403, { ok: false, error: 'CSRF', message: 'RELOAD THE PAGE AND TRY AGAIN' });
+    }
+    let body = {};
+    try {
+      const raw = await readBody(req);
+      body = raw ? JSON.parse(raw) : {};
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { ok: false, error: 'BODY' });
+    } catch {
+      return json(res, 400, { ok: false, error: 'BODY' });
+    }
+    if (req.method === 'POST') {
+      const fields = scheduleInput(body);
+      if (fields.error) return json(res, 400, { ok: false, error: fields.error, message: fields.message });
+      const item = pushSchedule.create({ title: fields.title, body: fields.text, path: fields.path, audience: fields.audience, at: fields.at, london: fields.london });
+      audit(req, 'push_schedule_create', { id: item.id, title: item.title, audience: item.audience, at: item.at, path: item.path });
+      return json(res, 200, { ok: true, item });
+    }
+    const id = String(body.id || url.searchParams.get('id') || '').trim();
+    if (!id) return json(res, 400, { ok: false, error: 'ID', message: 'MISSING ID' });
+    if (req.method === 'DELETE') {
+      const result = pushSchedule.cancel(id);
+      if (result.error === 'NOT_FOUND') return json(res, 404, { ok: false, error: 'NOT_FOUND', message: 'NOT FOUND' });
+      if (result.error === 'NOT_PENDING') return json(res, 409, { ok: false, error: 'NOT_PENDING', message: 'ONLY A PENDING NOTIFICATION CAN CHANGE' });
+      audit(req, 'push_schedule_cancel', { id, title: result.item.title });
+      return json(res, 200, { ok: true, item: result.item });
+    }
+    const fields = scheduleInput(body);
+    if (fields.error) return json(res, 400, { ok: false, error: fields.error, message: fields.message });
+    const result = pushSchedule.update(id, { title: fields.title, body: fields.text, path: fields.path, audience: fields.audience, at: fields.at, london: fields.london });
+    if (result.error === 'NOT_FOUND') return json(res, 404, { ok: false, error: 'NOT_FOUND', message: 'NOT FOUND' });
+    if (result.error === 'NOT_PENDING') return json(res, 409, { ok: false, error: 'NOT_PENDING', message: 'ONLY A PENDING NOTIFICATION CAN CHANGE' });
+    audit(req, 'push_schedule_edit', { id, title: result.item.title, audience: result.item.audience, at: result.item.at, path: result.item.path });
+    return json(res, 200, { ok: true, item: result.item });
+  }
+
   function gameEvents() {
     const out = [];
     for (const line of exportEventsSince(0).split('\n')) {
@@ -436,9 +499,10 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
 
   async function api(req, res, url, session) {
     const route = url.pathname.slice('/admin/api'.length);
+    if (route === '/push/schedule') return scheduleHttp(req, res, url, session);
     if (req.method === 'GET') {
       if (route === '/stats') return json(res, 200, { ok: true, ...stats() });
-      if (route === '/push/targets') return json(res, 200, { ok: true, targets: tapTargets(), titleMax: TITLE_MAX, bodyMax: BODY_MAX, defaultTestEmail: DEFAULT_TEST_EMAIL, live: pushLive() });
+      if (route === '/push/targets') return json(res, 200, { ok: true, targets: tapTargets(), audiences: AUDIENCES, titleMax: TITLE_MAX, bodyMax: BODY_MAX, defaultTestEmail: DEFAULT_TEST_EMAIL, live: pushLive() });
       if (route === '/push/history') return json(res, 200, { ok: true, history: readJsonl(historyPath, 30) });
       if (route === '/audit') return json(res, 200, { ok: true, audit: readJsonl(auditPath, 20) });
       if (route === '/events') {
@@ -615,7 +679,7 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
   /** Returns true when the request was an /admin request (handled). */
   return function handleAdmin(req, res, url) {
     const p = url.pathname;
-    if (p !== '/admin' && !p.startsWith('/admin/')) return false;
+    if (p !== '/admin' && !p.startsWith('/admin/') && p !== '/api/admin/push/schedule') return false;
     const run = async () => {
       if (p === '/admin/app.css' && req.method === 'GET') return asset(res, 'app.css', 'text/css; charset=utf-8');
       if (p === '/admin/app.js' && req.method === 'GET') return asset(res, 'app.js', 'text/javascript; charset=utf-8');
@@ -645,9 +709,10 @@ ${message ? `<p class="msg err">${esc(message)}</p>` : ''}
         return redirect(res, '/admin/login', { 'Set-Cookie': `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0` });
       }
       if (!session) {
-        if (p.startsWith('/admin/api/')) return json(res, 401, { ok: false, error: adminPassword() ? 'SESSION' : 'ADMIN_OFF' });
+        if (p.startsWith('/admin/api/') || p === '/api/admin/push/schedule') return json(res, 401, { ok: false, error: adminPassword() ? 'SESSION' : 'ADMIN_OFF' });
         return redirect(res, '/admin/login');
       }
+      if (p === '/api/admin/push/schedule') return scheduleHttp(req, res, url, session);
       if (p === '/admin' || p === '/admin/') {
         if (req.method !== 'GET') return send(res, 405, 'Method not allowed', { 'Content-Type': 'text/plain' });
         return adminPage(res, session);
