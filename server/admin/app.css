@@ -7,7 +7,7 @@ body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;text-transform:uppe
 .logo-sm{font-weight:900;font-size:16px}
 .stack{display:flex;flex-direction:column;gap:12px}
 label{font-size:12px;color:#aaa;font-weight:700}
-input,textarea,select{width:100%;background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:14px 12px;font:inherit;font-size:16px;text-transform:none;letter-spacing:0;-webkit-appearance:none;appearance:none}
+input,textarea,select{width:100%;background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:14px 12px;font:inherit;font-size:16px;text-transform:none;letter-spacing:0;color-scheme:dark;-webkit-appearance:none;appearance:none}
 textarea{min-height:96px;resize:vertical}
 select{background-image:none}
 input:focus,textarea:focus,select:focus{outline:2px solid #fff;outline-offset:2px}
@@ -50,6 +50,8 @@ h3{font-size:13px;color:#aaa;margin:28px 0 10px;font-weight:800}
 .confirm{border:1px dashed #fff;padding:12px;margin-top:10px}
 .gap{height:12px}
 .hint{color:#888;font-size:11px;margin:4px 0 0}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .flag{display:flex;justify-content:space-between;border-bottom:1px solid #333;padding:8px 0;font-size:13px}
 [hidden]{display:none!important}
 a{color:#fff}
