@@ -15,6 +15,7 @@ API server for the Reckless Raves app and website: content, posters, gallery, cr
   CORS (`Access-Control-Allow-Origin: *`) is applied to every response, including errors and cached poster/content paths.
 - `POST /api/submit` – track upload to the Drive submissions folder (50MB cap unchanged). 5 requests per IP per hour; the next returns `429 { ok: false, error: "RATE_LIMIT" }` before the file is parsed.
 - `GET /api/poster/<file>[?w=360|540|720]` – posters; `w` serves a cached phone-size JPEG.
+- `GET /avatar/manifest.json` – 2D crew selector layers. `size` is the 540×720 1× fallback (`url`, `body.lower`, `body.upper`). When 2× art is present, `size2x` is 1080×1440 and each layer also has `url2x` (and `body.lower2x` / `body.upper2x`); prefer those on retina. Layer files: `GET /avatar/<male|female>/<file>.png` and `GET /avatar/<male|female>/2x/<file>.png`. Icons stay at `GET /avatar/icons/<icon>.png`. Gated by `AVATAR_ART_LIVE`. Checks: `node scripts/avatar-check.mjs`.
 - `GET /api/gallery` – albums with `coverUrl` (1200w), `coverThumb` (750w), `images[].url` (1600w), `thumb` (750w), `full` (1500w).
 - `GET /api/crew/config` – ladder, crews, wardrobe, digital rewards.
 - `GET /spin-rules` – Spin the Wheel rules page.
